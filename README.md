@@ -26,7 +26,7 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 go get github.com/moepig/flexi
 ```
 
-Requires Go 1.22 or later.
+Requires Go 1.26 or later.
 
 ## Quick start
 
