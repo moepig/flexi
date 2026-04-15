@@ -36,6 +36,9 @@ func soloLat(id string, latencies map[string]int) flexi.Ticket {
 	return flexi.Ticket{ID: id, Players: []flexi.Player{{ID: id, Latencies: latencies}}}
 }
 
+// Purpose: Verify end-to-end match formation with a minimal rule set (distance rule only, no acceptance).
+// Method:  Enqueue four skill-balanced solo tickets and call Tick once.
+// Expect:  One Match is returned with two players per team and Pending drops to 0.
 func TestEndToEnd_BasicMatch(t *testing.T) {
 	mm, err := flexi.New([]byte(skillRS))
 	require.NoError(t, err)
@@ -51,6 +54,12 @@ func TestEndToEnd_BasicMatch(t *testing.T) {
 	assert.Equal(t, 0, mm.Pending())
 }
 
+// Purpose: Verify that an expansion step's relaxed maxAttributeDistance is applied after the wait time elapses.
+// Method:  Fix the clock, enqueue two tickets whose skill gap exceeds the initial limit, Tick (no match),
+//
+//	then advance the FakeClock by 31 seconds and Tick again.
+//
+// Expect:  First Tick: 0 matches, Pending=2. After 31 seconds: 1 match, Pending=0.
 func TestEndToEnd_NoMatchUntilExpansion(t *testing.T) {
 	body := `{
 	  "name": "expand",
@@ -86,6 +95,9 @@ func TestEndToEnd_NoMatchUntilExpansion(t *testing.T) {
 	assert.Equal(t, 0, mm.Pending())
 }
 
+// Purpose: Verify that the latency rule allows a match when all players satisfy the threshold in a shared region.
+// Method:  Enqueue two tickets with us-east-1 latencies of 50ms and 70ms against maxLatency=80, then Tick.
+// Expect:  One Match is formed (us-east-1 satisfies both players).
 func TestEndToEnd_LatencyRule(t *testing.T) {
 	body := `{
 	  "name": "lat",
@@ -101,6 +113,9 @@ func TestEndToEnd_LatencyRule(t *testing.T) {
 	require.Len(t, matches, 1, "us-east-1 satisfies both")
 }
 
+// Purpose: Verify that the latency rule blocks a match when no shared region satisfies the threshold for all players.
+// Method:  Enqueue two tickets with us-east-1 latencies 100ms and 10ms against maxLatency=50, then Tick.
+// Expect:  Zero matches (100ms exceeds the limit, so no valid shared region exists).
 func TestEndToEnd_LatencyRule_NoMatch(t *testing.T) {
 	body := `{
 	  "name": "lat",
@@ -116,6 +131,9 @@ func TestEndToEnd_LatencyRule_NoMatch(t *testing.T) {
 	assert.Empty(t, matches)
 }
 
+// Purpose: Verify that Cancel removes a queued ticket and returns ErrUnknownTicket for an unknown ID.
+// Method:  Enqueue two tickets, Cancel "a", then attempt to Cancel the non-existent ID "nope".
+// Expect:  Pending drops to 1; the second Cancel returns ErrUnknownTicket.
 func TestEndToEnd_CancelTicket(t *testing.T) {
 	mm, err := flexi.New([]byte(skillRS))
 	require.NoError(t, err)
@@ -128,6 +146,9 @@ func TestEndToEnd_CancelTicket(t *testing.T) {
 	assert.True(t, errors.Is(err, flexi.ErrUnknownTicket))
 }
 
+// Purpose: Verify that enqueueing the same ticket ID twice returns ErrDuplicateTicket.
+// Method:  Enqueue ID "a" twice in succession.
+// Expect:  The second Enqueue returns ErrDuplicateTicket.
 func TestEndToEnd_DuplicateTicket(t *testing.T) {
 	mm, err := flexi.New([]byte(skillRS))
 	require.NoError(t, err)
@@ -136,11 +157,17 @@ func TestEndToEnd_DuplicateTicket(t *testing.T) {
 	assert.True(t, errors.Is(err, flexi.ErrDuplicateTicket))
 }
 
+// Purpose: Verify that an invalid rule set JSON is rejected by flexi.New.
+// Method:  Pass a minimal JSON that is missing the required "teams" field to flexi.New.
+// Expect:  An error wrapping ErrInvalidRuleSet is returned.
 func TestEndToEnd_InvalidRuleSet(t *testing.T) {
 	_, err := flexi.New([]byte(`{"name":"x"}`))
 	assert.True(t, errors.Is(err, flexi.ErrInvalidRuleSet))
 }
 
+// Purpose: Verify that players in a party ticket are never split across teams.
+// Method:  Enqueue one two-player party ticket alongside two solo tickets; inspect the resulting Match.
+// Expect:  One Match is formed, and p1/p2 land on the same team in every assignment.
 func TestEndToEnd_PartyTicket(t *testing.T) {
 	body := `{
 	  "name": "party",

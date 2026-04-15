@@ -33,3 +33,8 @@ store.
 - This package is deliberately scope-limited. Persistence, expiry,
   prioritisation, and TTLs all belong elsewhere: the matchmaker layer
   decides when a ticket is "too old", not the queue.
+- The queue only ever holds tickets in `StatusQueued`. Once a match
+  candidate is formed, the matchmaker `Remove`s the tickets from here and
+  tracks their subsequent status (`REQUIRES_ACCEPTANCE`, `PLACING`, …)
+  outside the queue. Ticket-status bookkeeping is not this package's
+  concern.

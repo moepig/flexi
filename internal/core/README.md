@@ -20,6 +20,12 @@ aliases.
   was enqueued.
 - `Match` — a successful pairing: team name → players, plus the IDs of the
   consumed tickets.
+- `TicketStatus` and its constants (`StatusQueued`, `StatusSearching`,
+  `StatusRequiresAcceptance`, `StatusPlacing`, `StatusCompleted`,
+  `StatusFailed`, `StatusCancelled`, `StatusTimedOut`) — the FlexMatch
+  ticket lifecycle values, re-exported via type alias by the public
+  `flexi` package. Transitions and the acceptance state machine itself
+  live in `flexi`, not here.
 
 ## Notes for contributors
 

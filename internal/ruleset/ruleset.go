@@ -17,6 +17,18 @@ type RuleSet struct {
 	Teams               []Team             `json:"teams"`
 	Rules               []Rule             `json:"rules,omitempty"`
 	Expansions          []Expansion        `json:"expansions,omitempty"`
+
+	// AcceptanceRequired, when true, holds matches formed by the engine in
+	// REQUIRES_ACCEPTANCE state until every player on every matched ticket
+	// has accepted via Matchmaker.Accept. Mirrors the FlexMatch field of the
+	// same name on MatchmakingConfiguration.
+	AcceptanceRequired bool `json:"acceptanceRequired,omitempty"`
+
+	// AcceptanceTimeoutSeconds bounds how long a proposed match may sit in
+	// REQUIRES_ACCEPTANCE. When the deadline passes without full acceptance,
+	// the proposal is discarded and involved tickets move to TIMED_OUT.
+	// Zero means no timeout. Ignored when AcceptanceRequired is false.
+	AcceptanceTimeoutSeconds int `json:"acceptanceTimeoutSeconds,omitempty"`
 }
 
 // PlayerAttribute declares a player attribute the rule set will reference.

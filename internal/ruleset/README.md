@@ -17,7 +17,9 @@ consume the structures defined here.
 
 - `RuleSet`, `Team`, `PlayerAttribute`, `Algorithm`, `Rule`,
   `CompoundStatement`, `Expansion`, `ExpansionStep` — the parsed structures
-  that mirror the FlexMatch JSON schema.
+  that mirror the FlexMatch JSON schema. `RuleSet` also carries the
+  top-level `AcceptanceRequired` / `AcceptanceTimeoutSeconds` fields that
+  drive the player-acceptance flow in the public package.
 - `RuleType` and its constants (`RuleComparison`, `RuleDistance`, …,
   `RuleCompound`) for switching on rule kind.
 - `Parse(body []byte) (*RuleSet, error)` — entry point. Returns errors that

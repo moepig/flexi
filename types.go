@@ -29,3 +29,37 @@ type Ticket = core.Ticket
 // lists every ticket consumed to form the match, sorted lexicographically
 // for stable test output.
 type Match = core.Match
+
+// TicketStatus is the FlexMatch-compatible ticket lifecycle state.
+//
+// Values mirror the MatchmakingTicket.Status values in the AWS GameLift API.
+// Because this library runs FlexMatch in standalone mode (no game session
+// placement), the terminal success status is [StatusPlacing]; callers that
+// have attached connection information to the ticket may promote it to
+// [StatusCompleted] via [Matchmaker.MarkCompleted].
+//
+// Transitions:
+//   - Enqueue                         → StatusQueued
+//   - Tick forms a candidate (acceptanceRequired=true)
+//                                     → StatusRequiresAcceptance
+//   - All players Accept              → StatusPlacing (Match returned)
+//   - acceptanceRequired=false + Tick → StatusPlacing (Match returned)
+//   - MarkCompleted                   → StatusCompleted
+//   - Cancel on queued / rejected     → StatusCancelled
+//   - Acceptance timeout              → StatusTimedOut
+//
+// StatusSearching and StatusFailed are defined for parity with FlexMatch but
+// are not produced by the current implementation; they are reserved for
+// future use.
+type TicketStatus = core.TicketStatus
+
+const (
+	StatusQueued             = core.StatusQueued
+	StatusSearching          = core.StatusSearching
+	StatusRequiresAcceptance = core.StatusRequiresAcceptance
+	StatusPlacing            = core.StatusPlacing
+	StatusCompleted          = core.StatusCompleted
+	StatusFailed             = core.StatusFailed
+	StatusCancelled          = core.StatusCancelled
+	StatusTimedOut           = core.StatusTimedOut
+)

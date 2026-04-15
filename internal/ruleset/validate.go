@@ -91,6 +91,10 @@ func (rs *RuleSet) Validate() error {
 		}
 	}
 
+	if rs.AcceptanceTimeoutSeconds < 0 {
+		return fmt.Errorf("%w: acceptanceTimeoutSeconds must be >= 0", ErrInvalidRuleSet)
+	}
+
 	for i, exp := range rs.Expansions {
 		if exp.Target == "" {
 			return fmt.Errorf("%w: expansions[%d].target is required", ErrInvalidRuleSet, i)

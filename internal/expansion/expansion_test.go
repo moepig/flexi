@@ -10,6 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// Purpose: Verify that a rules[<name>].<field> expansion applies the latest qualifying step based on elapsed time.
+// Method:  Set up maxDistance=10 with steps 5s→50 and 15s→200; call Apply at elapsed times 0, 4, 5, 14, 15, and 60 seconds.
+// Expect:  maxDistance values are 10/10/50/50/200/200 respectively, and the original RuleSet is not mutated.
 func TestApply_RuleField(t *testing.T) {
 	max := 10.0
 	rs := &ruleset.RuleSet{
@@ -45,6 +48,9 @@ func TestApply_RuleField(t *testing.T) {
 	assert.Equal(t, 10.0, *rs.Rules[0].MaxDistance)
 }
 
+// Purpose: Verify that an algorithm.<field> expansion (switching batchingPreference) is applied correctly.
+// Method:  Start with "largestPopulation"; add a step at 10s to switch to "fastestRegion"; Apply at 11 seconds.
+// Expect:  The output Algorithm.BatchingPreference equals "fastestRegion".
 func TestApply_AlgorithmField(t *testing.T) {
 	rs := &ruleset.RuleSet{
 		Algorithm: ruleset.Algorithm{BatchingPreference: "largestPopulation"},

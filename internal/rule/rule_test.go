@@ -30,6 +30,9 @@ func numCand(skills ...float64) *Candidate {
 func ptrF(v float64) *float64 { return &v }
 func ptrI(v int) *int          { return &v }
 
+// Purpose: Verify that the comparison rule (avg(players.skill) <= 50) correctly passes and rejects candidates.
+// Method:  Evaluate the same evaluator against a player set with avg=30 and another with avg=75.
+// Expect:  avg=30 → true; avg=75 → false.
 func TestComparison(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleComparison,
@@ -46,6 +49,9 @@ func TestComparison(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Purpose: Verify that the distance rule compares two teams' average skill against maxDistance.
+// Method:  Evaluate the same evaluator with a close-skill pair (avg diff ≈5) and a wide-skill pair (avg diff ≈70).
+// Expect:  Close pair → true; wide pair → false.
 func TestDistance(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleDistance,
@@ -68,6 +74,9 @@ func TestDistance(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Purpose: Verify that the batchDistance rule limits the max skill spread within a candidate to maxAttributeDistance.
+// Method:  Evaluate against a spread-15 set (10,20,25) and an over-limit set (10,30,50).
+// Expect:  Spread-15 → true; over-limit → false.
 func TestBatchDistance(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleBatchDistance,
@@ -81,6 +90,9 @@ func TestBatchDistance(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Purpose: Verify that the collection/contains operation detects a target value in flatten(players.modes).
+// Method:  Evaluate against one player with modes=["TDM","CTF"] using reference value "TDM".
+// Expect:  true is returned.
 func TestCollection_Contains(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleCollection,
@@ -97,6 +109,9 @@ func TestCollection_Contains(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// Purpose: Verify that reference_intersection_count evaluates the overlap between set_intersection and a reference set against minCount.
+// Method:  Two players share "TDM"; reference=["TDM","CTF"], minCount=1. Evaluate the rule.
+// Expect:  Intersection count 1 >= minCount, so true is returned.
 func TestCollection_RefIntersection(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleCollection,
@@ -116,6 +131,9 @@ func TestCollection_RefIntersection(t *testing.T) {
 	assert.True(t, ok)
 }
 
+// Purpose: Verify that the latency rule passes when at least one region satisfies the threshold for all players.
+// Method:  Evaluate with a candidate where us-east-1 is within limit for both players, then one where it is not.
+// Expect:  Shared valid region → true; no valid shared region → false.
 func TestLatency(t *testing.T) {
 	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(100)}
 	ev, err := Build(r, nil)
@@ -134,6 +152,9 @@ func TestLatency(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Purpose: Verify that a compound(and) rule requires all child rules to pass.
+// Method:  Build an AND of comparison(avg<=50) and batchDistance(maxDist=20); evaluate against a passing set and a failing set.
+// Expect:  Both children satisfied → true; one child fails → false.
 func TestCompound(t *testing.T) {
 	r1 := &ruleset.Rule{Name: "a", Type: ruleset.RuleComparison,
 		Measurements: []string{"avg(players.skill)"}, ReferenceValue: json.RawMessage(`50`), Operation: "<="}

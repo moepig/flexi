@@ -40,3 +40,19 @@ type Match struct {
 	Teams     map[string][]Player
 	TicketIDs []string
 }
+
+// TicketStatus mirrors the FlexMatch ticket lifecycle as documented for
+// MatchmakingTicket.Status. See types.go in the public package for user-facing
+// docs.
+type TicketStatus string
+
+const (
+	StatusQueued             TicketStatus = "QUEUED"
+	StatusSearching          TicketStatus = "SEARCHING"
+	StatusRequiresAcceptance TicketStatus = "REQUIRES_ACCEPTANCE"
+	StatusPlacing            TicketStatus = "PLACING"
+	StatusCompleted          TicketStatus = "COMPLETED"
+	StatusFailed             TicketStatus = "FAILED"
+	StatusCancelled          TicketStatus = "CANCELLED"
+	StatusTimedOut           TicketStatus = "TIMED_OUT"
+)

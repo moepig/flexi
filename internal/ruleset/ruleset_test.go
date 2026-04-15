@@ -58,6 +58,9 @@ const fullRS = `{
   ]
 }`
 
+// Purpose: Verify that a rule set containing only the required minimum fields parses without error.
+// Method:  Parse minimalRS, which contains only "name" and "teams".
+// Expect:  No error; rs.Name and Teams[0].Name match the expected values.
 func TestParse_Minimal(t *testing.T) {
 	rs, err := Parse([]byte(minimalRS))
 	require.NoError(t, err)
@@ -66,6 +69,9 @@ func TestParse_Minimal(t *testing.T) {
 	assert.Equal(t, "red", rs.Teams[0].Name)
 }
 
+// Purpose: Verify that a fully-populated rule set is parsed faithfully across all field types.
+// Method:  Parse fullRS, which includes playerAttributes, all algorithm fields, all 7 rule kinds, and expansions.
+// Expect:  4 player attributes, 7 rules, 1 expansion with 2 steps, and algorithm fields set as specified.
 func TestParse_Full(t *testing.T) {
 	rs, err := Parse([]byte(fullRS))
 	require.NoError(t, err)
@@ -78,6 +84,12 @@ func TestParse_Full(t *testing.T) {
 	assert.Equal(t, 2, len(rs.Expansions[0].Steps))
 }
 
+// Purpose: Verify that representative invalid inputs are rejected by Parse with ErrInvalidRuleSet.
+// Method:  Run sub-tests for: missing teams, malformed JSON, unknown rule type, unknown rule reference,
+//
+//	balanced strategy without balancedAttribute, and an invalid expansion target.
+//
+// Expect:  Every case returns an error wrapping ErrInvalidRuleSet.
 func TestParse_Errors(t *testing.T) {
 	cases := map[string]string{
 		"no teams": `{"name":"x"}`,

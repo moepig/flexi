@@ -13,9 +13,10 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 - **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`.
 - **Algorithm strategies**: `exhaustiveSearch` and `balanced` (with `balancedAttribute`).
 - **Expansions**: rule values loosen automatically as tickets wait.
+- **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` on the rule set.
 - **Injectable clock**: tests advance time deterministically, no `time.Sleep`.
 - **Zero external dependencies at runtime** (testify is test-only). No network or persistence.
-- **Goroutine-safe**: producers may `Enqueue` / `Cancel` while another goroutine drives `Tick`.
+- **Goroutine-safe**: producers may `Enqueue` / `Cancel` / `Accept` / `Reject` while another goroutine drives `Tick`.
 
 > Backfill of in-progress matches is intentionally out of scope.
 
@@ -155,6 +156,61 @@ matches, _ = mm.Tick()            // expansion steps with waitTimeSeconds<=60 ap
 }
 ```
 
+## Ticket status and player acceptance
+
+Every ticket has a FlexMatch-compatible `TicketStatus`, queryable with
+`Matchmaker.Status(id)`:
+
+```
+Enqueue                        → QUEUED
+Tick (acceptanceRequired=false) → PLACING                           (Match returned)
+Tick (acceptanceRequired=true)  → REQUIRES_ACCEPTANCE               (Proposal created)
+  all Accept, then Tick        → PLACING                           (Match returned)
+  any Reject, or Cancel        → CANCELLED
+  timeout, then Tick           → TIMED_OUT
+MarkCompleted (from PLACING)   → COMPLETED
+```
+
+`SEARCHING` and `FAILED` are defined for parity with the AWS API but are
+not produced by the current implementation.
+
+Because this library operates as **FlexMatch standalone** (no game-session
+placement), the terminal success status `Tick` assigns is `PLACING`.
+Promote a ticket to `COMPLETED` with `MarkCompleted(id)` once your own
+placement pipeline has attached connection information.
+
+Enable the acceptance flow by setting the two standard FlexMatch fields on
+the rule set:
+
+```json
+{
+  ...
+  "acceptanceRequired": true,
+  "acceptanceTimeoutSeconds": 60
+}
+```
+
+Then drive the extra state machine:
+
+```go
+matches, _ := mm.Tick()            // acceptanceRequired=true → no matches yet
+for _, p := range mm.PendingAcceptances() {
+    for _, id := range p.TicketIDs {
+        for _, pl := range p.Teams[...] /* surface to your players */ {
+            if accepted { mm.Accept(id, pl.ID) } else { mm.Reject(id, pl.ID) }
+        }
+    }
+}
+matches, _ = mm.Tick()             // fully-accepted proposals are now returned
+```
+
+A single `Reject`, or a `Cancel` on any participating ticket, dissolves
+the whole proposal (every involved ticket transitions to `CANCELLED`).
+After `acceptanceTimeoutSeconds` elapses, the next `Tick` discards the
+proposal and its tickets become `TIMED_OUT`. Per FlexMatch, tickets in
+`CANCELLED` / `TIMED_OUT` / `FAILED` are not re-queued — resubmit with a
+fresh ticket ID if you need another attempt.
+
 ## API at a glance
 
 Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). The most-used surface:
@@ -164,9 +220,13 @@ Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). T
 | `flexi.New(rulesetJSON, opts...)` | Parse a rule set JSON document and return a `Matchmaker`. |
 | `flexi.WithClock(c)` | Option that overrides the time source. |
 | `Matchmaker.Enqueue(t)` | Add a ticket to the queue. |
-| `Matchmaker.Cancel(id)` | Remove a queued ticket. |
-| `Matchmaker.Tick()` | Form and return every match satisfiable right now. |
-| `Matchmaker.Pending()` | Count of queued tickets. |
+| `Matchmaker.Cancel(id)` | Remove a queued ticket, or dissolve a proposal it is part of. |
+| `Matchmaker.Tick()` | Expire timed-out proposals, resolve accepted ones, and form new matches. |
+| `Matchmaker.Pending()` | Count of tickets currently in `QUEUED`. |
+| `Matchmaker.Status(id)` | Current `TicketStatus` for a ticket. |
+| `Matchmaker.PendingAcceptances()` | Snapshot of proposals in `REQUIRES_ACCEPTANCE`. |
+| `Matchmaker.Accept(id, playerID)` / `Reject(id, playerID)` | Record a player's decision on a proposed match. |
+| `Matchmaker.MarkCompleted(id)` | Promote a `PLACING` ticket to `COMPLETED`. |
 | `flexi.Number / String / StringList / StringNumberMap` | Constructors for the four `Attribute` variants. |
 | `flexi.NewFakeClock(t)` | Test clock you can `Advance` or `Set`. |
 
