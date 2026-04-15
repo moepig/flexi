@@ -47,10 +47,13 @@ const ruleset = `{
     {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
   ],
   "rules": [
-    {"name": "FairSkill", "type": "distance",
-     "measurements": ["avg(teams[red].players.skill)"],
-     "referenceValue": "avg(teams[blue].players.skill)",
-     "maxDistance": 10}
+    {
+      "name": "FairSkill",
+      "type": "distance",
+      "measurements": ["avg(teams[red].players.skill)"],
+      "referenceValue": "avg(teams[blue].players.skill)",
+      "maxDistance": 10
+    }
   ]
 }`
 
@@ -133,25 +136,36 @@ matches, _ = mm.Tick()            // expansion steps with waitTimeSeconds<=60 ap
     {"name": "team", "minPlayers": 3, "maxPlayers": 3, "quantity": 2}
   ],
   "rules": [
-    {"name": "FairSkill", "type": "distance",
-     "measurements": ["avg(teams[team_1].players.skill)"],
-     "referenceValue": "avg(teams[team_2].players.skill)",
-     "maxDistance": 10},
-    {"name": "ModeOverlap", "type": "collection",
-     "measurements": ["set_intersection(players.modes)"],
-     "operation": "reference_intersection_count",
-     "referenceValue": ["TDM", "CTF", "FFA"],
-     "minCount": 1},
+    {
+      "name": "FairSkill",
+      "type": "distance",
+      "measurements": ["avg(teams[team_1].players.skill)"],
+      "referenceValue": "avg(teams[team_2].players.skill)",
+      "maxDistance": 10
+    },
+    {
+      "name": "ModeOverlap",
+      "type": "collection",
+      "measurements": ["set_intersection(players.modes)"],
+      "operation": "reference_intersection_count",
+      "referenceValue": ["TDM", "CTF", "FFA"],
+      "minCount": 1
+    },
     {"name": "Ping", "type": "latency", "maxLatency": 150},
-    {"name": "All", "type": "compound",
-     "statement": {"condition": "and", "rules": ["FairSkill", "ModeOverlap", "Ping"]}}
+    {
+      "name": "All",
+      "type": "compound",
+      "statement": {"condition": "and", "rules": ["FairSkill", "ModeOverlap", "Ping"]}
+    }
   ],
   "expansions": [
-    {"target": "rules[FairSkill].maxDistance",
-     "steps": [
-       {"waitTimeSeconds": 30, "value": 50},
-       {"waitTimeSeconds": 60, "value": 200}
-     ]}
+    {
+      "target": "rules[FairSkill].maxDistance",
+      "steps": [
+        {"waitTimeSeconds": 30, "value": 50},
+        {"waitTimeSeconds": 60, "value": 200}
+      ]
+    }
   ]
 }
 ```
