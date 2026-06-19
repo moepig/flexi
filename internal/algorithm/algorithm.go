@@ -12,25 +12,94 @@ import (
 
 // Result is one formed match.
 type Result struct {
-	Teams     map[string][]core.Player
-	TicketIDs []string
-	Region    string
+	Teams                 map[string][]core.Player
+	TicketIDs             []string
+	Region                string
+	RuleEvaluationMetrics []core.RuleMetric
 }
 
 // Build forms as many matches as possible from the given tickets, returning
-// each formed match and the remaining tickets in queue order.
-func Build(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket) {
+// each formed match, the remaining tickets in queue order, and the per-ticket
+// rule-evaluation metrics accumulated during this call.
+//
+// Every match-formation search evaluates each rule against the candidate it
+// builds; the resulting pass/fail tallies are attributed to all tickets that
+// were still in the queue at the time of that search (not only the ones that
+// ended up in the match), so timed-out and cancelled tickets carry the metrics
+// of every search they participated in.
+func Build(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric) {
 	remaining := append([]core.Ticket(nil), tickets...)
 	var out []Result
+	perTicket := make(map[string][]core.RuleMetric)
 	for {
-		res, used, ok := formOne(rs, evals, remaining)
+		res, used, searchMetrics, ok := formOne(rs, evals, remaining)
+		for _, t := range remaining {
+			perTicket[t.ID] = mergeMetrics(perTicket[t.ID], searchMetrics)
+		}
 		if !ok {
 			break
 		}
 		out = append(out, res)
 		remaining = removeTickets(remaining, used)
 	}
-	return out, remaining
+	return out, remaining, perTicket
+}
+
+// metricsCollector tallies per-rule pass/fail counts over a single match
+// formation search. Rule names are recorded in evaluator order (the rule set's
+// rules order) so snapshots and merges remain deterministic.
+type metricsCollector struct {
+	order  []string
+	passed map[string]int
+	failed map[string]int
+}
+
+func newMetricsCollector(evals []rule.Evaluator) *metricsCollector {
+	mc := &metricsCollector{
+		order:  make([]string, 0, len(evals)),
+		passed: make(map[string]int, len(evals)),
+		failed: make(map[string]int, len(evals)),
+	}
+	for _, e := range evals {
+		mc.order = append(mc.order, e.Name())
+	}
+	return mc
+}
+
+// snapshot returns the tallies in evaluator order, including rules with zero
+// counts, so the output shape is stable across searches.
+func (mc *metricsCollector) snapshot() []core.RuleMetric {
+	out := make([]core.RuleMetric, 0, len(mc.order))
+	for _, name := range mc.order {
+		out = append(out, core.RuleMetric{
+			RuleName:    name,
+			PassedCount: mc.passed[name],
+			FailedCount: mc.failed[name],
+		})
+	}
+	return out
+}
+
+// mergeMetrics adds src's counts into dst by rule name, preserving dst's
+// existing order and appending any names not yet present. dst may be nil.
+func mergeMetrics(dst, src []core.RuleMetric) []core.RuleMetric {
+	if len(src) == 0 {
+		return dst
+	}
+	idx := make(map[string]int, len(dst))
+	for i, m := range dst {
+		idx[m.RuleName] = i
+	}
+	for _, s := range src {
+		if i, ok := idx[s.RuleName]; ok {
+			dst[i].PassedCount += s.PassedCount
+			dst[i].FailedCount += s.FailedCount
+			continue
+		}
+		idx[s.RuleName] = len(dst)
+		dst = append(dst, s)
+	}
+	return dst
 }
 
 func removeTickets(in []core.Ticket, used map[string]struct{}) []core.Ticket {
@@ -94,14 +163,18 @@ func itoa(i int) string {
 	return string(digits)
 }
 
-// formOne attempts to build exactly one match from the head of tickets.
-func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) (Result, map[string]struct{}, bool) {
+// formOne attempts to build exactly one match from the head of tickets. It
+// always returns the rule-evaluation metrics it accumulated during the search,
+// whether or not a match was formed, so callers can attribute them to the
+// tickets that participated.
+func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
+	mc := newMetricsCollector(evals)
 	if len(tickets) == 0 {
-		return Result{}, nil, false
+		return Result{}, nil, mc.snapshot(), false
 	}
 	slots := expandTeams(rs)
 	if len(slots) == 0 {
-		return Result{}, nil, false
+		return Result{}, nil, mc.snapshot(), false
 	}
 	balancedAttr := ""
 	if rs.Algorithm.Strategy == "balanced" {
@@ -130,7 +203,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 				continue
 			}
 			slots[idx].Players = append(slots[idx].Players, t.Players...)
-			if rulesPass(rs, evals, slots) {
+			if rulesPassAndRecord(evals, slots, mc) {
 				used[t.ID] = struct{}{}
 				placed = true
 				break
@@ -138,7 +211,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 			slots[idx].Players = slots[idx].Players[:len(slots[idx].Players)-len(t.Players)]
 		}
 		if !placed && len(used) == 0 {
-			return Result{}, nil, false
+			return Result{}, nil, mc.snapshot(), false
 		}
 		if allFull(slots) {
 			break
@@ -146,10 +219,10 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 	}
 
 	if !allMinSatisfied(slots) {
-		return Result{}, nil, false
+		return Result{}, nil, mc.snapshot(), false
 	}
-	if !rulesPass(rs, evals, slots) {
-		return Result{}, nil, false
+	if !rulesPassAndRecord(evals, slots, mc) {
+		return Result{}, nil, mc.snapshot(), false
 	}
 
 	out := Result{Teams: make(map[string][]core.Player, len(slots)), Region: sharedRegion(slots)}
@@ -160,7 +233,8 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 		out.TicketIDs = append(out.TicketIDs, id)
 	}
 	sort.Strings(out.TicketIDs)
-	return out, used, true
+	out.RuleEvaluationMetrics = mc.snapshot()
+	return out, used, out.RuleEvaluationMetrics, true
 }
 
 func partyAttrSum(t core.Ticket, attr string) float64 {
@@ -219,16 +293,26 @@ func sharedRegion(slots []teamSlot) string {
 	return best
 }
 
-func rulesPass(rs *ruleset.RuleSet, evals []rule.Evaluator, slots []teamSlot) bool {
+// rulesPassAndRecord evaluates every rule against the candidate built from
+// slots, recording each pass/fail into mc, and reports whether the candidate is
+// admissible (all rules passed). Unlike a short-circuiting check it always
+// evaluates every rule so that each rule's failedCount is complete; the
+// returned bool still matches "all rules passed", so match correctness is
+// unchanged.
+func rulesPassAndRecord(evals []rule.Evaluator, slots []teamSlot, mc *metricsCollector) bool {
 	// Region is left empty so latency rules pick any satisfying region.
 	cand := buildCandidate(slots, "")
+	allOK := true
 	for _, e := range evals {
 		ok, err := e.Evaluate(cand)
-		if err != nil || !ok {
-			return false
+		if err == nil && ok {
+			mc.passed[e.Name()]++
+		} else {
+			mc.failed[e.Name()]++
+			allOK = false
 		}
 	}
-	return true
+	return allOK
 }
 
 func buildCandidate(slots []teamSlot, region string) *rule.Candidate {

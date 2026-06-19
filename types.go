@@ -30,6 +30,15 @@ type Ticket = core.Ticket
 // for stable test output.
 type Match = core.Match
 
+// RuleMetric reports how many times a rule passed or failed while
+// matchmaking processed a set of tickets. It corresponds to one entry of the
+// ruleEvaluationMetrics array in FlexMatch's PotentialMatchCreated,
+// MatchmakingTimedOut, and MatchmakingCancelled events. RuleName matches a
+// rule name declared in the rule set. It is exposed on [Match] and [Proposal]
+// for a formed/candidate match, and via [Matchmaker.RuleMetrics] for the
+// cumulative per-ticket totals.
+type RuleMetric = core.RuleMetric
+
 // TicketStatus is the FlexMatch-compatible ticket lifecycle state.
 //
 // Values mirror the MatchmakingTicket.Status values in the AWS GameLift API.

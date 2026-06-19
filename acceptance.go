@@ -33,6 +33,10 @@ type Proposal struct {
 	Teams     map[string][]core.Player
 	TicketIDs []string
 	CreatedAt time.Time
+	// RuleEvaluationMetrics holds the per-rule pass/fail tallies accumulated
+	// by the search that formed this candidate match, for PotentialMatchCreated
+	// parity. It is nil when the rule set declares no rules.
+	RuleEvaluationMetrics []core.RuleMetric
 }
 
 // playerAcceptance is the per-player decision within a proposal.
@@ -52,6 +56,10 @@ type proposal struct {
 	tickets   []core.Ticket
 	ticketIDs []string
 	createdAt time.Time
+	// ruleEvaluationMetrics is the metrics snapshot of the search that formed
+	// this proposal, carried through so the resulting Match can report it
+	// without re-running the (now gone) search.
+	ruleEvaluationMetrics []core.RuleMetric
 	// decisions[ticketID][playerID] is each player's current decision.
 	decisions map[string]map[string]playerAcceptance
 }
@@ -75,11 +83,12 @@ func newProposal(res matchResult, tickets []core.Ticket, now time.Time) *proposa
 	ids := append([]string(nil), res.TicketIDs...)
 	sort.Strings(ids)
 	return &proposal{
-		teams:     res.Teams,
-		tickets:   picked,
-		ticketIDs: ids,
-		createdAt: now,
-		decisions: decisions,
+		teams:                 res.Teams,
+		tickets:               picked,
+		ticketIDs:             ids,
+		createdAt:             now,
+		ruleEvaluationMetrics: res.RuleEvaluationMetrics,
+		decisions:             decisions,
 	}
 }
 
@@ -104,15 +113,17 @@ func (p *proposal) export() Proposal {
 		teams[k] = cp
 	}
 	return Proposal{
-		Teams:     teams,
-		TicketIDs: append([]string(nil), p.ticketIDs...),
-		CreatedAt: p.createdAt,
+		Teams:                 teams,
+		TicketIDs:             append([]string(nil), p.ticketIDs...),
+		CreatedAt:             p.createdAt,
+		RuleEvaluationMetrics: append([]core.RuleMetric(nil), p.ruleEvaluationMetrics...),
 	}
 }
 
 // matchResult is the subset of algorithm.Result that acceptance.go needs; it
 // is introduced to avoid the acceptance code importing the algorithm package.
 type matchResult struct {
-	Teams     map[string][]core.Player
-	TicketIDs []string
+	Teams                 map[string][]core.Player
+	TicketIDs             []string
+	RuleEvaluationMetrics []core.RuleMetric
 }

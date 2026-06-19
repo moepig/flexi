@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/moepig/flexi/internal/algorithm"
+	"github.com/moepig/flexi/internal/core"
 	"github.com/moepig/flexi/internal/expansion"
 	"github.com/moepig/flexi/internal/queue"
 	"github.com/moepig/flexi/internal/rule"
@@ -54,6 +55,11 @@ type Matchmaker struct {
 	// ticketToProposal indexes a ticket ID to the proposal that currently
 	// holds it, so Accept/Reject/Cancel are O(1).
 	ticketToProposal map[string]*proposal
+	// ruleMetrics holds the cumulative per-ticket rule-evaluation metrics
+	// accumulated across every Tick a ticket participated in. Like statuses it
+	// is retained through terminal states so timed-out / cancelled tickets can
+	// still be queried.
+	ruleMetrics map[string][]core.RuleMetric
 }
 
 // Option configures a [Matchmaker] at construction time. Pass any number of
@@ -94,6 +100,7 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 		clock:            cfg.clock,
 		statuses:         make(map[string]TicketStatus),
 		ticketToProposal: make(map[string]*proposal),
+		ruleMetrics:      make(map[string][]core.RuleMetric),
 	}, nil
 }
 
@@ -184,6 +191,49 @@ func (m *Matchmaker) Status(ticketID string) (TicketStatus, error) {
 		return "", ErrUnknownTicket
 	}
 	return s, nil
+}
+
+// RuleMetrics returns the cumulative rule-evaluation metrics accumulated for
+// ticketID across every Tick in which it participated in match formation,
+// together with true. If the ticket has never been involved in an evaluation
+// (for example it was cancelled while still only queued, or no such ticket is
+// tracked), it returns nil and false.
+//
+// The metrics support FlexMatch's MatchmakingTimedOut and MatchmakingCancelled
+// parity: like [Status], they are retained through terminal states (TIMED_OUT,
+// CANCELLED, PLACING, COMPLETED) and are not evicted automatically. Each entry
+// is named after a top-level rule in the rule set; the returned slice is a copy
+// the caller may mutate freely.
+func (m *Matchmaker) RuleMetrics(ticketID string) ([]RuleMetric, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	mtr, ok := m.ruleMetrics[ticketID]
+	if !ok {
+		return nil, false
+	}
+	return append([]core.RuleMetric(nil), mtr...), true
+}
+
+// mergeMetrics adds src's per-rule counts into dst by rule name, preserving
+// dst's existing order and appending names not yet present. dst may be nil.
+func mergeMetrics(dst, src []core.RuleMetric) []core.RuleMetric {
+	if len(src) == 0 {
+		return dst
+	}
+	idx := make(map[string]int, len(dst))
+	for i, mtr := range dst {
+		idx[mtr.RuleName] = i
+	}
+	for _, s := range src {
+		if i, ok := idx[s.RuleName]; ok {
+			dst[i].PassedCount += s.PassedCount
+			dst[i].FailedCount += s.FailedCount
+			continue
+		}
+		idx[s.RuleName] = len(dst)
+		dst = append(dst, s)
+	}
+	return dst
 }
 
 // PendingAcceptances returns a snapshot of every proposal currently awaiting
@@ -318,7 +368,12 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 		return nil, err
 	}
 
-	results, _ := algorithm.Build(rs, evals, tickets)
+	results, _, tickMetrics := algorithm.Build(rs, evals, tickets)
+	// Accumulate this tick's metrics onto every participating ticket before
+	// branching, so tickets that go on to time out or be cancelled keep them.
+	for id, mtr := range tickMetrics {
+		m.ruleMetrics[id] = mergeMetrics(m.ruleMetrics[id], mtr)
+	}
 	if len(results) == 0 {
 		if len(matches) == 0 {
 			return nil, nil
@@ -328,7 +383,11 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 
 	if m.rs.AcceptanceRequired {
 		for _, r := range results {
-			p := newProposal(matchResult{Teams: r.Teams, TicketIDs: r.TicketIDs}, tickets, now)
+			p := newProposal(matchResult{
+				Teams:                 r.Teams,
+				TicketIDs:             r.TicketIDs,
+				RuleEvaluationMetrics: r.RuleEvaluationMetrics,
+			}, tickets, now)
 			m.proposals = append(m.proposals, p)
 			for _, id := range r.TicketIDs {
 				m.statuses[id] = StatusRequiresAcceptance
@@ -343,7 +402,11 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 	}
 
 	for _, r := range results {
-		matches = append(matches, Match{Teams: r.Teams, TicketIDs: r.TicketIDs})
+		matches = append(matches, Match{
+			Teams:                 r.Teams,
+			TicketIDs:             r.TicketIDs,
+			RuleEvaluationMetrics: r.RuleEvaluationMetrics,
+		})
 		for _, id := range r.TicketIDs {
 			m.statuses[id] = StatusPlacing
 		}
@@ -384,8 +447,9 @@ func (m *Matchmaker) resolveAcceptedProposals() []Match {
 			continue
 		}
 		out = append(out, Match{
-			Teams:     p.teams,
-			TicketIDs: append([]string(nil), p.ticketIDs...),
+			Teams:                 p.teams,
+			TicketIDs:             append([]string(nil), p.ticketIDs...),
+			RuleEvaluationMetrics: append([]core.RuleMetric(nil), p.ruleEvaluationMetrics...),
 		})
 		for _, id := range p.ticketIDs {
 			m.statuses[id] = StatusPlacing

@@ -51,7 +51,7 @@ func TestBuild_FormsTwoTeams(t *testing.T) {
 	  ]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 11), solo("c", 12), solo("d", 13)}
-	out, remaining := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := Build(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Empty(t, remaining)
 	assert.Len(t, out[0].Teams["red"], 2)
@@ -70,7 +70,7 @@ func TestBuild_RespectsBatchDistance(t *testing.T) {
 	    "batchAttribute": "skill", "maxAttributeDistance": 5}]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 100), solo("c", 11), solo("d", 12)}
-	out, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := Build(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	ids := append([]string(nil), out[0].TicketIDs...)
 	sort.Strings(ids)
@@ -86,7 +86,7 @@ func TestBuild_NoMatchUnderMin(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 4, "maxPlayers": 4}]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 11)}
-	out, remaining := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := Build(rs, evals(t, rs), tickets)
 	assert.Empty(t, out)
 	assert.Len(t, remaining, 2)
 }
@@ -100,7 +100,7 @@ func TestBuild_QuantityExpansion(t *testing.T) {
 	  "teams": [{"name": "team", "minPlayers": 2, "maxPlayers": 2, "quantity": 2}]
 	}`)
 	tickets := []core.Ticket{solo("a", 1), solo("b", 2), solo("c", 3), solo("d", 4)}
-	out, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := Build(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Len(t, out[0].Teams["team_1"], 2)
 	assert.Len(t, out[0].Teams["team_2"], 2)
@@ -120,7 +120,7 @@ func TestBuild_BalancedStrategy(t *testing.T) {
 	  ]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 100), solo("c", 11), solo("d", 99)}
-	out, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := Build(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	red := sumSkill(out[0].Teams["red"])
 	blue := sumSkill(out[0].Teams["blue"])

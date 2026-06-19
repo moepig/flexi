@@ -225,6 +225,39 @@ proposal and its tickets become `TIMED_OUT`. Per FlexMatch, tickets in
 `CANCELLED` / `TIMED_OUT` / `FAILED` are not re-queued — resubmit with a
 fresh ticket ID if you need another attempt.
 
+## Rule evaluation metrics
+
+FlexMatch's match events (`PotentialMatchCreated`, `MatchmakingTimedOut`,
+`MatchmakingCancelled`) include `ruleEvaluationMetrics` — per-rule
+`{ruleName, passedCount, failedCount}` tallies. flexi reproduces these:
+
+- Every `Match` and `Proposal` carries `RuleEvaluationMetrics`, the pass/fail
+  counts accumulated by the search that formed that (candidate) match. This
+  maps to `PotentialMatchCreated`.
+- `Matchmaker.RuleMetrics(id)` returns the **cumulative** per-rule tallies for
+  a ticket across every `Tick` it took part in, retained through terminal
+  states. Use it for the `MatchmakingTimedOut` / `MatchmakingCancelled` events
+  of tickets that never made it into a match.
+
+```go
+matches, _ := mm.Tick()
+for _, rm := range matches[0].RuleEvaluationMetrics {
+    fmt.Printf("%s: passed=%d failed=%d\n", rm.RuleName, rm.PassedCount, rm.FailedCount)
+}
+
+// For a timed-out / cancelled ticket:
+if metrics, ok := mm.RuleMetrics("ticket-1"); ok {
+    // metrics[i].RuleName / PassedCount / FailedCount
+}
+```
+
+Rule names match those declared in the rule set's `rules` block; a compound
+rule is reported once (its child evaluations are not listed separately). Each
+rule-set evaluation counts every rule (no short-circuit) so `failedCount` is
+complete. Tickets never involved in an evaluation report no metrics (the slice
+is nil / `RuleMetrics` returns `false`), keeping the addition backward
+compatible.
+
 ## API at a glance
 
 Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). The most-used surface:
@@ -238,6 +271,7 @@ Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). T
 | `Matchmaker.Tick()` | Expire timed-out proposals, resolve accepted ones, and form new matches. |
 | `Matchmaker.Pending()` | Count of tickets currently in `QUEUED`. |
 | `Matchmaker.Status(id)` | Current `TicketStatus` for a ticket. |
+| `Matchmaker.RuleMetrics(id)` | Cumulative per-rule pass/fail tallies for a ticket (`ruleEvaluationMetrics`). |
 | `Matchmaker.PendingAcceptances()` | Snapshot of proposals in `REQUIRES_ACCEPTANCE`. |
 | `Matchmaker.Accept(id, playerID)` / `Reject(id, playerID)` | Record a player's decision on a proposed match. |
 | `Matchmaker.MarkCompleted(id)` | Promote a `PLACING` ticket to `COMPLETED`. |

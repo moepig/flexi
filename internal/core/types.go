@@ -37,8 +37,18 @@ type Ticket struct {
 }
 
 type Match struct {
-	Teams     map[string][]Player
-	TicketIDs []string
+	Teams                 map[string][]Player
+	TicketIDs             []string
+	RuleEvaluationMetrics []RuleMetric
+}
+
+// RuleMetric aggregates how often a single rule passed or failed during
+// matchmaking. It mirrors one entry of FlexMatch's ruleEvaluationMetrics
+// array. RuleName matches the name declared in the rule set's rules block.
+type RuleMetric struct {
+	RuleName    string
+	PassedCount int
+	FailedCount int
 }
 
 // TicketStatus mirrors the FlexMatch ticket lifecycle as documented for

@@ -23,6 +23,9 @@
 //     batchDistance, collection, latency, compound.
 //   - Time-driven expansions that loosen rule values once a ticket has been
 //     waiting long enough.
+//   - Rule evaluation metrics (FlexMatch's ruleEvaluationMetrics): per-rule
+//     pass/fail tallies on each [Match] and [Proposal], plus cumulative
+//     per-ticket totals via [Matchmaker.RuleMetrics].
 //
 // Backfill of in-progress matches is intentionally out of scope.
 //
