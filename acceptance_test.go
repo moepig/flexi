@@ -29,6 +29,51 @@ const acceptRS = `{
   "acceptanceTimeoutSeconds": 60
 }`
 
+// Like acceptRS but also bounds the overall request lifetime at 120s via
+// requestTimeoutSeconds, used to exercise the request-level TIMED_OUT path.
+const acceptReqTimeoutRS = `{
+  "name": "skill-balance-accept-reqtimeout",
+  "ruleLanguageVersion": "1.0",
+  "playerAttributes": [{"name": "skill", "type": "number"}],
+  "teams": [
+    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
+    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
+  ],
+  "rules": [
+    {"name": "FairSkill", "type": "distance",
+     "measurements": ["avg(teams[red].players.skill)"],
+     "referenceValue": "avg(teams[blue].players.skill)",
+     "maxDistance": 10}
+  ],
+  "acceptanceRequired": true,
+  "acceptanceTimeoutSeconds": 60,
+  "requestTimeoutSeconds": 120
+}`
+
+// Acceptance required with no acceptance timeout, but a short request timeout —
+// used to verify the request deadline does not evict tickets held in a proposal.
+const reqTimeoutNoAcceptTimeoutRS = `{
+  "name": "accept-no-acctimeout-reqtimeout",
+  "teams": [
+    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
+    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
+  ],
+  "acceptanceRequired": true,
+  "requestTimeoutSeconds": 30
+}`
+
+// No acceptance, teams of two, with a 30s request timeout. A lone ticket can
+// never match and will time out at the request deadline.
+const requestTimeoutRS = `{
+  "name": "req-timeout",
+  "playerAttributes": [{"name": "skill", "type": "number"}],
+  "teams": [
+    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
+    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
+  ],
+  "requestTimeoutSeconds": 30
+}`
+
 func enqueueQuartet(t *testing.T, mm *flexi.Matchmaker) {
 	t.Helper()
 	for _, tk := range []flexi.Ticket{solo("a", 50), solo("b", 52), solo("c", 49), solo("d", 51)} {
@@ -255,10 +300,12 @@ func TestAcceptance_RequeuedTicketsRematchOnLaterTick(t *testing.T) {
 	assert.ElementsMatch(t, []string{"a", "b", "c", "e"}, matches[0].TicketIDs)
 }
 
-// Purpose: Verify the default acceptance-timeout split — accepted tickets re-queue, non-responders time out.
+// Purpose: Verify the AWS-compliant acceptance-timeout split — accepted tickets re-queue, non-responders are CANCELLED.
 // Method:  Accept all players on a, b (not c, d), advance FakeClock past the 61s deadline, then Tick.
-// Expect:  a, b → SEARCHING (re-queued, StatusReasonAcceptanceFailed); c, d → TIMED_OUT; no Match; Pending=2.
-func TestAcceptance_TimeoutRequeuesAcceptedTimesOutNonResponders(t *testing.T) {
+// Expect:  a, b → SEARCHING (re-queued, StatusReasonAcceptanceFailed); c, d → CANCELLED; no Match; Pending=2.
+//
+//	FlexMatch terminates non-accepting tickets as CANCELLED (not TIMED_OUT) on an acceptance failure.
+func TestAcceptance_TimeoutRequeuesAcceptedCancelsNonResponders(t *testing.T) {
 	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
 	mm, err := flexi.New([]byte(acceptRS), flexi.WithClock(clock))
 	require.NoError(t, err)
@@ -288,16 +335,16 @@ func TestAcceptance_TimeoutRequeuesAcceptedTimesOutNonResponders(t *testing.T) {
 	for _, id := range []string{"c", "d"} {
 		s, err := mm.Status(id)
 		require.NoError(t, err)
-		assert.Equalf(t, flexi.StatusTimedOut, s, "ticket %s", id)
+		assert.Equalf(t, flexi.StatusCancelled, s, "ticket %s", id)
 	}
 	assert.Len(t, mm.PendingAcceptances(), 0)
 	assert.Equal(t, 2, mm.Pending(), "accepted tickets are back in the queue")
 }
 
-// Purpose: Verify that a fully unanswered proposal times out every ticket (none re-queued).
-// Method:  Let the 61s deadline pass with no acceptances at all, then Tick.
-// Expect:  All four tickets become StatusTimedOut, no Match, PendingAcceptances=0, Pending=0.
-func TestAcceptance_TimeoutWithNoAcceptancesTimesOutAll(t *testing.T) {
+// Purpose: Verify that a fully unanswered proposal cancels every ticket (none re-queued, none timed out).
+// Method:  Let the 61s acceptance deadline pass with no acceptances at all, then Tick.
+// Expect:  All four tickets become StatusCancelled, no Match, PendingAcceptances=0, Pending=0.
+func TestAcceptance_TimeoutWithNoAcceptancesCancelsAll(t *testing.T) {
 	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
 	mm, err := flexi.New([]byte(acceptRS), flexi.WithClock(clock))
 	require.NoError(t, err)
@@ -316,7 +363,7 @@ func TestAcceptance_TimeoutWithNoAcceptancesTimesOutAll(t *testing.T) {
 	for _, id := range []string{"a", "b", "c", "d"} {
 		s, err := mm.Status(id)
 		require.NoError(t, err)
-		assert.Equalf(t, flexi.StatusTimedOut, s, "ticket %s", id)
+		assert.Equalf(t, flexi.StatusCancelled, s, "ticket %s", id)
 	}
 	assert.Len(t, mm.PendingAcceptances(), 0)
 	assert.Equal(t, 0, mm.Pending())
@@ -438,6 +485,171 @@ func TestCancel_OnRequeuedSearchingTicket(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, flexi.StatusCancelled, s)
 	assert.Equal(t, 2, mm.Pending(), "cancelled ticket removed from the queue")
+}
+
+// Purpose: Verify per-player aggregation — a party ticket where one member does not accept is CANCELLED, not re-queued.
+// Method:  Propose duo(p1,p2)+c+d; accept c, d fully and p1 of the duo, then Reject p2.
+// Expect:  duo → CANCELLED (p1's acceptance does not save it); c, d → SEARCHING (re-queued); Pending=2.
+func TestAcceptance_PartyTicketPartialAcceptanceCancelled(t *testing.T) {
+	mm, err := flexi.New([]byte(reqTimeoutNoAcceptTimeoutRS))
+	require.NoError(t, err)
+	require.NoError(t, mm.Enqueue(flexi.Ticket{ID: "duo", Players: []flexi.Player{{ID: "p1"}, {ID: "p2"}}}))
+	require.NoError(t, mm.Enqueue(flexi.Ticket{ID: "c", Players: []flexi.Player{{ID: "c"}}}))
+	require.NoError(t, mm.Enqueue(flexi.Ticket{ID: "d", Players: []flexi.Player{{ID: "d"}}}))
+
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, mm.PendingAcceptances(), 1)
+
+	require.NoError(t, mm.Accept("c", "c"))
+	require.NoError(t, mm.Accept("d", "d"))
+	require.NoError(t, mm.Accept("duo", "p1"))
+	require.NoError(t, mm.Reject("duo", "p2"))
+
+	s, err := mm.Status("duo")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusCancelled, s, "duo not fully accepted (p2 rejected) → cancelled")
+
+	for _, id := range []string{"c", "d"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		assert.Equalf(t, flexi.StatusSearching, s, "ticket %s", id)
+	}
+	assert.Equal(t, 2, mm.Pending())
+}
+
+// Purpose: Verify that a Reject cancels not only the rejecter but also siblings that never responded.
+// Method:  Propose a,b,c,d; accept only a; Reject b; leave c and d with no response.
+// Expect:  a → SEARCHING (re-queued); b, c, d → CANCELLED (rejected or failed to respond); Pending=1.
+func TestAcceptance_RejectCancelsPendingSiblings(t *testing.T) {
+	mm, err := flexi.New([]byte(acceptRS))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+
+	require.NoError(t, mm.Accept("a", "a"))
+	require.NoError(t, mm.Reject("b", "b"))
+
+	s, err := mm.Status("a")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusSearching, s, "fully-accepted ticket re-queued")
+
+	for _, id := range []string{"b", "c", "d"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		assert.Equalf(t, flexi.StatusCancelled, s, "ticket %s (rejected or unresponsive)", id)
+	}
+	assert.Equal(t, 1, mm.Pending())
+}
+
+// --- Request timeout (requestTimeoutSeconds) --------------------------------
+
+// Purpose: Verify a ticket that cannot match times out at requestTimeoutSeconds with StatusTimedOut.
+// Method:  Enqueue a lone ticket (teams need 4 players), Tick, advance past 30s, Tick again.
+// Expect:  First Tick leaves it QUEUED; after the deadline it becomes StatusTimedOut and leaves the queue.
+func TestRequestTimeout_UnmatchedTicketTimesOut(t *testing.T) {
+	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
+	mm, err := flexi.New([]byte(requestTimeoutRS), flexi.WithClock(clock))
+	require.NoError(t, err)
+	require.NoError(t, mm.Enqueue(solo("a", 50)))
+
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	s, err := mm.Status("a")
+	require.NoError(t, err)
+	require.Equal(t, flexi.StatusQueued, s)
+
+	clock.Advance(31 * time.Second)
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	assert.Len(t, matches, 0)
+
+	s, err = mm.Status("a")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusTimedOut, s)
+	assert.Equal(t, 0, mm.Pending())
+}
+
+// Purpose: Verify the request deadline is measured from the original enqueue, so a re-queued ticket still times out.
+// Method:  Propose a,b,c,d; accept a,b,c and Reject d (a,b,c re-queue to SEARCHING); advance past 120s; Tick.
+// Expect:  a, b, c → StatusTimedOut (measured from their original enqueue), their acceptance-failure reason cleared.
+func TestRequestTimeout_RequeuedTicketTimesOutFromOriginalEnqueue(t *testing.T) {
+	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
+	mm, err := flexi.New([]byte(acceptReqTimeoutRS), flexi.WithClock(clock))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+
+	_, err = mm.Tick()
+	require.NoError(t, err)
+
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, mm.Accept(id, id))
+	}
+	require.NoError(t, mm.Reject("d", "d"))
+	for _, id := range []string{"a", "b", "c"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		require.Equalf(t, flexi.StatusSearching, s, "ticket %s re-queued", id)
+	}
+
+	clock.Advance(121 * time.Second)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+
+	for _, id := range []string{"a", "b", "c"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		assert.Equalf(t, flexi.StatusTimedOut, s, "ticket %s", id)
+		_, ok := mm.StatusReason(id)
+		assert.Falsef(t, ok, "ticket %s should not carry a status reason once timed out", id)
+	}
+	assert.Equal(t, 0, mm.Pending())
+}
+
+// Purpose: Verify the request deadline does not evict tickets currently held in a proposal (REQUIRES_ACCEPTANCE).
+// Method:  Form a proposal (no acceptance timeout, 30s request timeout), advance past 30s, Tick.
+// Expect:  Tickets stay REQUIRES_ACCEPTANCE — acceptance windows, not the request deadline, govern proposal tickets.
+func TestRequestTimeout_DoesNotAffectProposalTickets(t *testing.T) {
+	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
+	mm, err := flexi.New([]byte(reqTimeoutNoAcceptTimeoutRS), flexi.WithClock(clock))
+	require.NoError(t, err)
+	for _, tk := range []flexi.Ticket{
+		{ID: "a", Players: []flexi.Player{{ID: "a"}}},
+		{ID: "b", Players: []flexi.Player{{ID: "b"}}},
+		{ID: "c", Players: []flexi.Player{{ID: "c"}}},
+		{ID: "d", Players: []flexi.Player{{ID: "d"}}},
+	} {
+		require.NoError(t, mm.Enqueue(tk))
+	}
+
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, mm.PendingAcceptances(), 1)
+
+	clock.Advance(31 * time.Second)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+
+	for _, id := range []string{"a", "b", "c", "d"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		assert.Equalf(t, flexi.StatusRequiresAcceptance, s, "ticket %s still awaiting acceptance", id)
+	}
+	require.Len(t, mm.PendingAcceptances(), 1)
+}
+
+// Purpose: Verify that a negative requestTimeoutSeconds is rejected at parse time.
+// Method:  Pass a rule set JSON with requestTimeoutSeconds=-1 to flexi.New.
+// Expect:  An error wrapping ErrInvalidRuleSet is returned.
+func TestRequestTimeout_NegativeRejected(t *testing.T) {
+	body := `{
+      "name": "bad-req",
+      "teams": [{"name": "t", "minPlayers": 1, "maxPlayers": 1}],
+      "requestTimeoutSeconds": -1
+    }`
+	_, err := flexi.New([]byte(body))
+	assert.Truef(t, errors.Is(err, flexi.ErrInvalidRuleSet), "got %v", err)
 }
 
 // --- Parser / config surface ------------------------------------------------

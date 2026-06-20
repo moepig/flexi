@@ -89,11 +89,14 @@ func TestMetrics_NoShortCircuitCountsAllRules(t *testing.T) {
 }
 
 // Purpose: Verify timed-out tickets retain queryable cumulative metrics.
-// Method:  Form a proposal (acceptRS), let the acceptance deadline elapse, Tick.
-// Expect:  Tickets are TIMED_OUT and RuleMetrics still returns their FairSkill metric.
+// Method:  Form a proposal (FairSkill evaluated → metrics recorded), accept a,b,c and Reject d so a,b,c
+//
+//	return to SEARCHING, then let requestTimeoutSeconds elapse to genuinely time them out.
+//
+// Expect:  Ticket "a" is TIMED_OUT and RuleMetrics still returns its FairSkill metric.
 func TestMetrics_RetainedAfterTimeout(t *testing.T) {
 	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
-	mm, err := flexi.New([]byte(acceptRS), flexi.WithClock(clock))
+	mm, err := flexi.New([]byte(acceptReqTimeoutRS), flexi.WithClock(clock))
 	require.NoError(t, err)
 	enqueueQuartet(t, mm)
 
@@ -101,7 +104,12 @@ func TestMetrics_RetainedAfterTimeout(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, mm.PendingAcceptances(), 1)
 
-	clock.Advance(61 * time.Second)
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, mm.Accept(id, id))
+	}
+	require.NoError(t, mm.Reject("d", "d"))
+
+	clock.Advance(121 * time.Second)
 	_, err = mm.Tick()
 	require.NoError(t, err)
 

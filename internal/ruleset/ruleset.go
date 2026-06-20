@@ -26,9 +26,19 @@ type RuleSet struct {
 
 	// AcceptanceTimeoutSeconds bounds how long a proposed match may sit in
 	// REQUIRES_ACCEPTANCE. When the deadline passes without full acceptance,
-	// the proposal is discarded and involved tickets move to TIMED_OUT.
+	// the proposal is discarded: tickets whose every player had accepted return
+	// to SEARCHING, and the rest move to CANCELLED (matching FlexMatch, which
+	// cancels tickets that reject or fail to respond to a proposed match).
 	// Zero means no timeout. Ignored when AcceptanceRequired is false.
 	AcceptanceTimeoutSeconds int `json:"acceptanceTimeoutSeconds,omitempty"`
+
+	// RequestTimeoutSeconds bounds how long a matchmaking request (ticket) may
+	// stay in matchmaking before it fails. When a queued or re-queued
+	// (SEARCHING) ticket has waited this long, measured from its original
+	// enqueue time, it moves to TIMED_OUT. Zero means no timeout. Mirrors the
+	// FlexMatch field of the same name on MatchmakingConfiguration; unlike
+	// AcceptanceTimeoutSeconds it applies regardless of AcceptanceRequired.
+	RequestTimeoutSeconds int `json:"requestTimeoutSeconds,omitempty"`
 }
 
 // PlayerAttribute declares a player attribute the rule set will reference.

@@ -13,7 +13,7 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 - **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`.
 - **Algorithm strategies**: `exhaustiveSearch` and `balanced` (with `balancedAttribute`).
 - **Expansions**: rule values loosen automatically as tickets wait.
-- **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` on the rule set. On a failed acceptance (reject or timeout) the tickets that did accept return to `SEARCHING` for re-matching, mirroring AWS.
+- **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `SEARCHING` / `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` / `requestTimeoutSeconds` on the rule set. On a failed acceptance (reject or acceptance timeout) the tickets that did accept return to `SEARCHING` for re-matching while the rest are `CANCELLED`; `TIMED_OUT` is reserved for the request-level `requestTimeoutSeconds`, mirroring AWS.
 - **Injectable clock**: tests advance time deterministically, no `time.Sleep`.
 - **Zero external dependencies at runtime** (testify is test-only). No network or persistence.
 - **Goroutine-safe**: producers may `Enqueue` / `Cancel` / `Accept` / `Reject` while another goroutine drives `Tick`.
@@ -181,17 +181,19 @@ Tick (acceptanceRequired=false) → PLACING                           (Match ret
 Tick (acceptanceRequired=true)  → REQUIRES_ACCEPTANCE               (Proposal created)
   all Accept, then Tick        → PLACING                           (Match returned)
   Cancel                       → CANCELLED                         (whole proposal)
-  any Reject                   → rejecter/non-accepter CANCELLED;
-                                 fully-accepted siblings SEARCHING (re-queued)
-  timeout, then Tick           → non-accepter TIMED_OUT;
-                                 fully-accepted siblings SEARCHING (re-queued)
+  any Reject / acceptance      → rejecter/non-responder CANCELLED;
+    timeout                      fully-accepted siblings SEARCHING (re-queued)
+requestTimeoutSeconds elapsed  → TIMED_OUT
 MarkCompleted (from PLACING)   → COMPLETED
 ```
 
 `SEARCHING` marks a ticket that accepted a proposed match which then failed to
 gather every required acceptance: it is returned to the queue and re-matched by
-the next `Tick`. `FAILED` is defined for parity with the AWS API but is not
-produced by the current implementation.
+the next `Tick`. `TIMED_OUT` is reached only when a ticket exceeds the rule
+set's `requestTimeoutSeconds` while searching — an **acceptance** failure
+(reject or acceptance timeout) terminates the non-accepting tickets as
+`CANCELLED`, matching AWS FlexMatch. `FAILED` is defined for parity with the AWS
+API but is not produced by the current implementation.
 
 Because this library operates as **FlexMatch standalone** (no game-session
 placement), the terminal success status `Tick` assigns is `PLACING`.
@@ -233,9 +235,10 @@ FlexMatch by splitting the proposal's tickets:
   can tell a re-entering ticket apart from a freshly enqueued one (and emit the
   corresponding `MatchmakingSearching` event).
 - The ticket(s) that **caused the failure** — the rejecting player's ticket, or
-  any ticket whose players never responded — move to a terminal state
-  (`CANCELLED` for a reject, `TIMED_OUT` for a timeout). Resubmit with a fresh
-  ticket ID for another attempt.
+  any ticket whose players never responded — move to `CANCELLED`, whether the
+  failure was a reject or an acceptance timeout. (FlexMatch reserves `TIMED_OUT`
+  for the request-level deadline below, not for acceptance failures.) Resubmit
+  with a fresh ticket ID for another attempt.
 
 ```go
 mm.Accept("a", "alice")
@@ -248,6 +251,25 @@ mm.Tick()                           // re-matches "a" against the pool
 
 A user-initiated `Cancel` on any participating ticket is different: it always
 dissolves the **whole** proposal, terminating every ticket as `CANCELLED`.
+
+### Request timeout
+
+Set `requestTimeoutSeconds` on the rule set to bound how long a ticket may stay
+in matchmaking overall:
+
+```json
+{
+  ...
+  "requestTimeoutSeconds": 60
+}
+```
+
+Any `QUEUED` or re-queued (`SEARCHING`) ticket that has been waiting longer than
+this — measured from its **original** `Enqueue`, so the clock keeps running
+across an acceptance-failure re-queue — moves to `TIMED_OUT` on the next `Tick`.
+The deadline applies whether or not `acceptanceRequired` is set; tickets
+currently held in a proposal (`REQUIRES_ACCEPTANCE`) are governed by
+`acceptanceTimeoutSeconds` instead. Zero (the default) disables it.
 
 ## Rule evaluation metrics
 

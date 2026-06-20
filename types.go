@@ -55,16 +55,18 @@ type RuleMetric = core.RuleMetric
 //   - acceptanceRequired=false + Tick → StatusPlacing (Match returned)
 //   - MarkCompleted                   → StatusCompleted
 //   - Cancel on queued / searching    → StatusCancelled
-//   - Reject: rejecting / non-accepting ticket → StatusCancelled;
-//     fully-accepted siblings → StatusSearching (re-queued)
-//   - Acceptance timeout: non-accepting ticket → StatusTimedOut;
-//     fully-accepted siblings → StatusSearching (re-queued)
+//   - Reject / acceptance timeout: rejecting or non-responding ticket →
+//     StatusCancelled; fully-accepted siblings → StatusSearching (re-queued)
+//   - requestTimeoutSeconds elapsed   → StatusTimedOut
 //
 // StatusSearching is assigned to a ticket that is returned to the queue after a
 // proposed match it accepted failed to gather every required acceptance (see
 // [Matchmaker.StatusReason]); such a ticket is re-considered by the next
-// [Matchmaker.Tick]. StatusFailed is defined for parity with FlexMatch but is
-// not produced by the current implementation.
+// [Matchmaker.Tick]. StatusTimedOut is reached when a ticket exceeds the rule
+// set's requestTimeoutSeconds while in matchmaking — note that an acceptance
+// failure (reject or acceptance timeout) does not produce it; those terminate
+// as StatusCancelled, matching FlexMatch. StatusFailed is defined for parity
+// with FlexMatch but is not produced by the current implementation.
 type TicketStatus = core.TicketStatus
 
 const (
