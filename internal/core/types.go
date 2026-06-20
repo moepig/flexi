@@ -66,3 +66,17 @@ const (
 	StatusCancelled          TicketStatus = "CANCELLED"
 	StatusTimedOut           TicketStatus = "TIMED_OUT"
 )
+
+// StatusReason supplies additional context for a ticket's current status,
+// mirroring MatchmakingTicket.StatusReason in the GameLift API. See types.go
+// in the public package for user-facing docs.
+type StatusReason string
+
+const (
+	// StatusReasonAcceptanceFailed marks a ticket that has returned to
+	// StatusSearching after a proposed match failed to gather the required
+	// acceptances — i.e. a sibling player rejected or let the acceptance
+	// window time out. It corresponds to FlexMatch re-entering an accepted
+	// ticket into matchmaking after a proposed match fails.
+	StatusReasonAcceptanceFailed StatusReason = "ACCEPTANCE_FAILED"
+)

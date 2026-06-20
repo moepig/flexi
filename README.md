@@ -13,7 +13,7 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 - **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`.
 - **Algorithm strategies**: `exhaustiveSearch` and `balanced` (with `balancedAttribute`).
 - **Expansions**: rule values loosen automatically as tickets wait.
-- **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` on the rule set.
+- **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` on the rule set. On a failed acceptance (reject or timeout) the tickets that did accept return to `SEARCHING` for re-matching, mirroring AWS.
 - **Injectable clock**: tests advance time deterministically, no `time.Sleep`.
 - **Zero external dependencies at runtime** (testify is test-only). No network or persistence.
 - **Goroutine-safe**: producers may `Enqueue` / `Cancel` / `Accept` / `Reject` while another goroutine drives `Tick`.
@@ -180,13 +180,18 @@ Enqueue                        → QUEUED
 Tick (acceptanceRequired=false) → PLACING                           (Match returned)
 Tick (acceptanceRequired=true)  → REQUIRES_ACCEPTANCE               (Proposal created)
   all Accept, then Tick        → PLACING                           (Match returned)
-  any Reject, or Cancel        → CANCELLED
-  timeout, then Tick           → TIMED_OUT
+  Cancel                       → CANCELLED                         (whole proposal)
+  any Reject                   → rejecter/non-accepter CANCELLED;
+                                 fully-accepted siblings SEARCHING (re-queued)
+  timeout, then Tick           → non-accepter TIMED_OUT;
+                                 fully-accepted siblings SEARCHING (re-queued)
 MarkCompleted (from PLACING)   → COMPLETED
 ```
 
-`SEARCHING` and `FAILED` are defined for parity with the AWS API but are
-not produced by the current implementation.
+`SEARCHING` marks a ticket that accepted a proposed match which then failed to
+gather every required acceptance: it is returned to the queue and re-matched by
+the next `Tick`. `FAILED` is defined for parity with the AWS API but is not
+produced by the current implementation.
 
 Because this library operates as **FlexMatch standalone** (no game-session
 placement), the terminal success status `Tick` assigns is `PLACING`.
@@ -218,12 +223,31 @@ for _, p := range mm.PendingAcceptances() {
 matches, _ = mm.Tick()             // fully-accepted proposals are now returned
 ```
 
-A single `Reject`, or a `Cancel` on any participating ticket, dissolves
-the whole proposal (every involved ticket transitions to `CANCELLED`).
-After `acceptanceTimeoutSeconds` elapses, the next `Tick` discards the
-proposal and its tickets become `TIMED_OUT`. Per FlexMatch, tickets in
-`CANCELLED` / `TIMED_OUT` / `FAILED` are not re-queued — resubmit with a
-fresh ticket ID if you need another attempt.
+When a proposed match **fails acceptance** — a player `Reject`s, or
+`acceptanceTimeoutSeconds` elapses before everyone responds — flexi follows AWS
+FlexMatch by splitting the proposal's tickets:
+
+- Tickets on which **every player had already accepted** return to the queue in
+  `SEARCHING` and are re-considered by the next `Tick`. `Matchmaker.StatusReason(id)`
+  reports `StatusReasonAcceptanceFailed` for them, so a caller polling `Status`
+  can tell a re-entering ticket apart from a freshly enqueued one (and emit the
+  corresponding `MatchmakingSearching` event).
+- The ticket(s) that **caused the failure** — the rejecting player's ticket, or
+  any ticket whose players never responded — move to a terminal state
+  (`CANCELLED` for a reject, `TIMED_OUT` for a timeout). Resubmit with a fresh
+  ticket ID for another attempt.
+
+```go
+mm.Accept("a", "alice")
+mm.Reject("b", "bob")              // proposal fails acceptance
+mm.Status("a")                      // SEARCHING  (re-queued)
+mm.StatusReason("a")                // StatusReasonAcceptanceFailed, true
+mm.Status("b")                      // CANCELLED  (terminal)
+mm.Tick()                           // re-matches "a" against the pool
+```
+
+A user-initiated `Cancel` on any participating ticket is different: it always
+dissolves the **whole** proposal, terminating every ticket as `CANCELLED`.
 
 ## Rule evaluation metrics
 
@@ -271,6 +295,7 @@ Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). T
 | `Matchmaker.Tick()` | Expire timed-out proposals, resolve accepted ones, and form new matches. |
 | `Matchmaker.Pending()` | Count of tickets currently in `QUEUED`. |
 | `Matchmaker.Status(id)` | Current `TicketStatus` for a ticket. |
+| `Matchmaker.StatusReason(id)` | Supplementary `StatusReason` (e.g. acceptance-failure re-queue), when one applies. |
 | `Matchmaker.RuleMetrics(id)` | Cumulative per-rule pass/fail tallies for a ticket (`ruleEvaluationMetrics`). |
 | `Matchmaker.PendingAcceptances()` | Snapshot of proposals in `REQUIRES_ACCEPTANCE`. |
 | `Matchmaker.Accept(id, playerID)` / `Reject(id, playerID)` | Record a player's decision on a proposed match. |

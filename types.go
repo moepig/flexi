@@ -54,12 +54,17 @@ type RuleMetric = core.RuleMetric
 //   - All players Accept              → StatusPlacing (Match returned)
 //   - acceptanceRequired=false + Tick → StatusPlacing (Match returned)
 //   - MarkCompleted                   → StatusCompleted
-//   - Cancel on queued / rejected     → StatusCancelled
-//   - Acceptance timeout              → StatusTimedOut
+//   - Cancel on queued / searching    → StatusCancelled
+//   - Reject: rejecting / non-accepting ticket → StatusCancelled;
+//     fully-accepted siblings → StatusSearching (re-queued)
+//   - Acceptance timeout: non-accepting ticket → StatusTimedOut;
+//     fully-accepted siblings → StatusSearching (re-queued)
 //
-// StatusSearching and StatusFailed are defined for parity with FlexMatch but
-// are not produced by the current implementation; they are reserved for
-// future use.
+// StatusSearching is assigned to a ticket that is returned to the queue after a
+// proposed match it accepted failed to gather every required acceptance (see
+// [Matchmaker.StatusReason]); such a ticket is re-considered by the next
+// [Matchmaker.Tick]. StatusFailed is defined for parity with FlexMatch but is
+// not produced by the current implementation.
 type TicketStatus = core.TicketStatus
 
 const (
@@ -71,4 +76,18 @@ const (
 	StatusFailed             = core.StatusFailed
 	StatusCancelled          = core.StatusCancelled
 	StatusTimedOut           = core.StatusTimedOut
+)
+
+// StatusReason gives supplementary context for a ticket's status, mirroring
+// MatchmakingTicket.StatusReason in the GameLift API. It is reported by
+// [Matchmaker.StatusReason].
+type StatusReason = core.StatusReason
+
+const (
+	// StatusReasonAcceptanceFailed is set on a ticket that has returned to
+	// [StatusSearching] because a proposed match it had accepted failed to
+	// gather every required acceptance (a sibling player rejected or timed
+	// out). It corresponds to FlexMatch's MatchmakingSearching event being
+	// re-emitted with a status reason after a proposed match fails.
+	StatusReasonAcceptanceFailed = core.StatusReasonAcceptanceFailed
 )

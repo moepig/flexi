@@ -94,11 +94,27 @@ func newProposal(res matchResult, tickets []core.Ticket, now time.Time) *proposa
 
 // fullyAccepted reports whether every player on every ticket has accepted.
 func (p *proposal) fullyAccepted() bool {
-	for _, players := range p.decisions {
-		for _, d := range players {
-			if d != acceptYes {
-				return false
-			}
+	for id := range p.decisions {
+		if !p.ticketAccepted(id) {
+			return false
+		}
+	}
+	return true
+}
+
+// ticketAccepted reports whether every player on the single ticket id has
+// accepted. A ticket with an unknown id, or holding any player who rejected or
+// has not yet responded, is not accepted. It underpins the acceptance-failure
+// split: when a proposed match fails, accepted tickets are re-queued while the
+// rest move to a terminal state.
+func (p *proposal) ticketAccepted(id string) bool {
+	players, ok := p.decisions[id]
+	if !ok {
+		return false
+	}
+	for _, d := range players {
+		if d != acceptYes {
+			return false
 		}
 	}
 	return true

@@ -26,6 +26,10 @@ aliases.
   ticket lifecycle values, re-exported via type alias by the public
   `flexi` package. Transitions and the acceptance state machine itself
   live in `flexi`, not here.
+- `StatusReason` and its constant `StatusReasonAcceptanceFailed` — the
+  supplementary reason a ticket carries when it returns to `StatusSearching`
+  after a proposed match fails acceptance, mirroring
+  `MatchmakingTicket.StatusReason`.
 
 ## Notes for contributors
 

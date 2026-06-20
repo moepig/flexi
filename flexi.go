@@ -40,6 +40,13 @@ var ErrUnknownTicket = queue.ErrUnknownTicket
 // again; once every player on every ticket of a proposal has accepted, the
 // next Tick returns the corresponding [Match].
 //
+// If a proposed match fails acceptance — a player rejects, or the
+// acceptanceTimeoutSeconds window elapses — flexi mirrors AWS FlexMatch:
+// tickets on which every player had accepted return to the queue in
+// [StatusSearching] (carrying [StatusReasonAcceptanceFailed]) for the next Tick
+// to re-match, while the ticket(s) that caused the failure move to a terminal
+// state ([StatusCancelled] on reject, [StatusTimedOut] on timeout).
+//
 // Matchmaker has no internal goroutines or timers — all work happens on the
 // goroutine that calls Tick. The queue, status map, and proposals are
 // protected by a mutex so producers may Enqueue/Cancel/Accept concurrently
@@ -60,6 +67,11 @@ type Matchmaker struct {
 	// is retained through terminal states so timed-out / cancelled tickets can
 	// still be queried.
 	ruleMetrics map[string][]core.RuleMetric
+	// statusReasons holds the supplementary StatusReason for tickets that
+	// currently carry one (only acceptance-failure re-queues today). Entries
+	// are only meaningful while the ticket is in StatusSearching; stale entries
+	// are ignored by StatusReason.
+	statusReasons map[string]StatusReason
 }
 
 // Option configures a [Matchmaker] at construction time. Pass any number of
@@ -101,6 +113,7 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 		statuses:         make(map[string]TicketStatus),
 		ticketToProposal: make(map[string]*proposal),
 		ruleMetrics:      make(map[string][]core.RuleMetric),
+		statusReasons:    make(map[string]StatusReason),
 	}, nil
 }
 
@@ -139,11 +152,14 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 
 // Cancel removes the ticket with the given ID from the matchmaker and marks
 // it [StatusCancelled]. It returns [ErrUnknownTicket] if no such ticket is
-// currently tracked.
+// currently tracked. A ticket that is queued ([StatusQueued]) or has been
+// re-queued after a failed acceptance ([StatusSearching]) is removed directly.
 //
 // If the ticket is part of an active proposal, the entire proposal is torn
 // down: every sibling ticket is also marked [StatusCancelled], matching
-// FlexMatch's behaviour when any member of a proposed match drops out.
+// FlexMatch's behaviour when any member of a proposed match drops out. Unlike
+// a reject or acceptance timeout, a user-initiated cancel never re-queues a
+// sibling, even one that had already accepted.
 //
 // Cancelling a ticket that has already been consumed by a match (and is now
 // [StatusPlacing] or [StatusCompleted]) is rejected with [ErrUnknownTicket].
@@ -156,7 +172,7 @@ func (m *Matchmaker) Cancel(ticketID string) error {
 		return ErrUnknownTicket
 	}
 	switch status {
-	case StatusQueued:
+	case StatusQueued, StatusSearching:
 		if err := m.q.Cancel(ticketID); err != nil {
 			return err
 		}
@@ -191,6 +207,26 @@ func (m *Matchmaker) Status(ticketID string) (TicketStatus, error) {
 		return "", ErrUnknownTicket
 	}
 	return s, nil
+}
+
+// StatusReason returns the supplementary [StatusReason] for ticketID together
+// with true when one applies, and "", false otherwise.
+//
+// A reason is currently set only while a ticket is in [StatusSearching] after a
+// proposed match it had accepted failed to gather every required acceptance; in
+// that case the reason is [StatusReasonAcceptanceFailed]. This lets a caller
+// polling [Matchmaker.Status] distinguish a ticket re-entering matchmaking after
+// a failed acceptance (FlexMatch's MatchmakingSearching with a status reason)
+// from one that was freshly enqueued. The reason clears as soon as the ticket
+// leaves StatusSearching (for example when the next Tick re-matches it).
+func (m *Matchmaker) StatusReason(ticketID string) (StatusReason, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.statuses[ticketID] != StatusSearching {
+		return "", false
+	}
+	r, ok := m.statusReasons[ticketID]
+	return r, ok
 }
 
 // RuleMetrics returns the cumulative rule-evaluation metrics accumulated for
@@ -261,10 +297,13 @@ func (m *Matchmaker) Accept(ticketID, playerID string) error {
 	return m.record(ticketID, playerID, acceptYes)
 }
 
-// Reject records a player's rejection of a proposed match. A single
-// rejection dissolves the entire proposal: every ticket in it moves to
-// [StatusCancelled], matching the FlexMatch behaviour documented for the
-// CANCELLED status.
+// Reject records a player's rejection of a proposed match, ending the
+// proposal. The proposal's tickets are then split following AWS FlexMatch: any
+// ticket on which every player had already accepted is returned to the queue in
+// [StatusSearching] (carrying [StatusReasonAcceptanceFailed]) so the next
+// [Matchmaker.Tick] can re-match it, while every other ticket — including the
+// one carrying the rejecting player and any whose players never responded —
+// moves to [StatusCancelled].
 //
 // Errors match [Matchmaker.Accept].
 func (m *Matchmaker) Reject(ticketID, playerID string) error {
@@ -291,7 +330,7 @@ func (m *Matchmaker) record(ticketID, playerID string, d playerAcceptance) error
 	}
 	players[playerID] = d
 	if d == acceptNo {
-		m.dissolveProposal(p, StatusCancelled)
+		m.failProposal(p, StatusCancelled)
 	}
 	return nil
 }
@@ -320,8 +359,9 @@ func (m *Matchmaker) MarkCompleted(ticketID string) error {
 // Tick drives the matchmaker forward by one step.
 //
 // In order, Tick:
-//  1. Expires any proposals whose acceptanceTimeoutSeconds has elapsed,
-//     moving their tickets to [StatusTimedOut].
+//  1. Expires any proposals whose acceptanceTimeoutSeconds has elapsed: their
+//     fully-accepted tickets return to the queue in [StatusSearching] and the
+//     rest move to [StatusTimedOut].
 //  2. Resolves any proposals that have been fully accepted, moving tickets
 //     to [StatusPlacing] and returning the corresponding [Match] values.
 //  3. Applies FlexMatch expansions based on the oldest queued ticket's
@@ -425,7 +465,7 @@ func (m *Matchmaker) expireProposals(now time.Time) {
 	kept := m.proposals[:0]
 	for _, p := range m.proposals {
 		if now.Sub(p.createdAt) >= deadline {
-			m.markProposalTickets(p, StatusTimedOut)
+			m.failProposalTickets(p, StatusTimedOut)
 			continue
 		}
 		kept = append(kept, p)
@@ -460,18 +500,51 @@ func (m *Matchmaker) resolveAcceptedProposals() []Match {
 	return out
 }
 
-// dissolveProposal removes p and transitions each of its tickets to status.
-// Used by Cancel (StatusCancelled) and Reject (StatusCancelled).
-// Callers must hold m.mu.
+// dissolveProposal removes p and transitions every one of its tickets to
+// status. Used by Cancel, where a user-initiated cancel terminates the whole
+// proposed match regardless of per-player acceptance. Callers must hold m.mu.
 func (m *Matchmaker) dissolveProposal(p *proposal, status TicketStatus) {
 	m.markProposalTickets(p, status)
-	kept := m.proposals[:0]
-	for _, q := range m.proposals {
-		if q != p {
-			kept = append(kept, q)
-		}
+	m.removeProposal(p)
+}
+
+// failProposal handles a proposal that failed acceptance — a reject or an
+// acceptance timeout — splitting its tickets via failProposalTickets and then
+// removing the proposal. terminalStatus is the state for the ticket(s) that
+// caused the failure (StatusCancelled for a reject, StatusTimedOut for a
+// timeout). Callers must hold m.mu.
+func (m *Matchmaker) failProposal(p *proposal, terminalStatus TicketStatus) {
+	m.failProposalTickets(p, terminalStatus)
+	m.removeProposal(p)
+}
+
+// failProposalTickets disposes of an acceptance-failed proposal's tickets but,
+// unlike failProposal, leaves the m.proposals slice untouched so callers that
+// rebuild it in a loop (expireProposals) can manage removal themselves.
+//
+// Following AWS FlexMatch, every ticket on which all players had accepted is
+// returned to the queue in StatusSearching with StatusReasonAcceptanceFailed,
+// and the remaining tickets — those holding a player who rejected or never
+// responded — move to terminalStatus. Callers must hold m.mu.
+func (m *Matchmaker) failProposalTickets(p *proposal, terminalStatus TicketStatus) {
+	byID := make(map[string]core.Ticket, len(p.tickets))
+	for _, t := range p.tickets {
+		byID[t.ID] = t
 	}
-	m.proposals = kept
+	for _, id := range p.ticketIDs {
+		delete(m.ticketToProposal, id)
+		if p.ticketAccepted(id) {
+			m.statuses[id] = StatusSearching
+			m.statusReasons[id] = StatusReasonAcceptanceFailed
+			// Return the ticket to the queue (preserving its original
+			// EnqueuedAt so wait-time expansions keep accruing) for the next
+			// Tick to re-match. The ticket was removed from the queue when the
+			// proposal formed, so a duplicate here is not expected.
+			_ = m.q.Enqueue(byID[id])
+			continue
+		}
+		m.statuses[id] = terminalStatus
+	}
 }
 
 // markProposalTickets sets the terminal status for every ticket in p and
@@ -481,6 +554,18 @@ func (m *Matchmaker) markProposalTickets(p *proposal, status TicketStatus) {
 		m.statuses[id] = status
 		delete(m.ticketToProposal, id)
 	}
+}
+
+// removeProposal drops p from the pending proposals slice. Callers must hold
+// m.mu.
+func (m *Matchmaker) removeProposal(p *proposal) {
+	kept := m.proposals[:0]
+	for _, q := range m.proposals {
+		if q != p {
+			kept = append(kept, q)
+		}
+	}
+	m.proposals = kept
 }
 
 // buildEvaluators constructs evaluators in two passes so that compound rules

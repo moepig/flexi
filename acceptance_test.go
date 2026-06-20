@@ -170,13 +170,18 @@ func TestAcceptance_AllAcceptYieldsMatchOnNextTick(t *testing.T) {
 	assert.Len(t, mm.PendingAcceptances(), 0)
 }
 
-// Purpose: Verify that a single Reject dissolves the entire proposal, moving all tickets to CANCELLED (per FlexMatch spec).
-// Method:  Create a proposal with four tickets, Reject from one player, then check every ticket's Status.
+// Purpose: Verify the default AWS-compliant Reject split — the rejecting ticket is CANCELLED while
 //
-//	Also confirm that a subsequent Tick does not re-match the cancelled tickets.
+//	a sibling that had fully accepted is re-queued to SEARCHING for re-matching.
 //
-// Expect:  All four tickets become StatusCancelled, PendingAcceptances=0, next Tick returns 0 matches and Pending=0.
-func TestAcceptance_RejectDissolvesProposalToCancelled(t *testing.T) {
+// Method:  Create a proposal with four tickets, Accept all players on a, b, c, then Reject from d,
+//
+//	and check every ticket's Status, PendingAcceptances, StatusReason, and Pending count.
+//
+// Expect:  d → CANCELLED (terminal); a, b, c → SEARCHING with StatusReasonAcceptanceFailed and
+//
+//	re-queued (Pending=3); PendingAcceptances=0.
+func TestAcceptance_RejectRequeuesAcceptedAndCancelsRejecter(t *testing.T) {
 	mm, err := flexi.New([]byte(acceptRS))
 	require.NoError(t, err)
 	enqueueQuartet(t, mm)
@@ -184,26 +189,76 @@ func TestAcceptance_RejectDissolvesProposalToCancelled(t *testing.T) {
 	_, err = mm.Tick()
 	require.NoError(t, err)
 
-	require.NoError(t, mm.Reject("a", "a"))
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, mm.Accept(id, id))
+	}
+	require.NoError(t, mm.Reject("d", "d"))
 
-	for _, id := range []string{"a", "b", "c", "d"} {
+	// The rejecting ticket is terminal.
+	s, err := mm.Status("d")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusCancelled, s)
+	_, hasReason := mm.StatusReason("d")
+	assert.False(t, hasReason, "terminal ticket carries no status reason")
+
+	// The fully-accepted siblings return to SEARCHING and are re-queued.
+	for _, id := range []string{"a", "b", "c"} {
 		s, err := mm.Status(id)
 		require.NoError(t, err)
-		assert.Equalf(t, flexi.StatusCancelled, s, "ticket %s", id)
+		assert.Equalf(t, flexi.StatusSearching, s, "ticket %s", id)
+		reason, ok := mm.StatusReason(id)
+		assert.Truef(t, ok, "ticket %s should carry a status reason", id)
+		assert.Equal(t, flexi.StatusReasonAcceptanceFailed, reason)
 	}
 	assert.Len(t, mm.PendingAcceptances(), 0)
-
-	// Subsequent Tick must not re-match cancelled tickets (they're gone).
-	matches, err := mm.Tick()
-	require.NoError(t, err)
-	assert.Len(t, matches, 0)
-	assert.Equal(t, 0, mm.Pending())
+	assert.Equal(t, 3, mm.Pending(), "accepted tickets are back in the queue")
 }
 
-// Purpose: Verify that a proposal is discarded as TIMED_OUT after acceptanceTimeoutSeconds elapses.
-// Method:  Advance FakeClock past the deadline (61s) after only some players have accepted, then Tick.
-// Expect:  All four tickets become StatusTimedOut, no Match is returned, PendingAcceptances=0.
-func TestAcceptance_TimeoutMovesTicketsToTimedOut(t *testing.T) {
+// Purpose: Verify a re-queued ticket is genuinely re-matched by a later Tick once new partners arrive.
+// Method:  Form a proposal over a,b,c,d; accept all of a,b,c; reject d so a,b,c re-queue to SEARCHING;
+//
+//	enqueue a fresh ticket e; Tick to form a new proposal; accept all four; Tick to a Match.
+//
+// Expect:  The second Tick re-proposes using the re-queued tickets, and full acceptance yields a Match.
+func TestAcceptance_RequeuedTicketsRematchOnLaterTick(t *testing.T) {
+	mm, err := flexi.New([]byte(acceptRS))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, mm.Accept(id, id))
+	}
+	require.NoError(t, mm.Reject("d", "d"))
+
+	// A fresh partner arrives to replace the cancelled d.
+	require.NoError(t, mm.Enqueue(solo("e", 50)))
+
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	props := mm.PendingAcceptances()
+	require.Len(t, props, 1, "re-queued tickets form a new proposal")
+	assert.ElementsMatch(t, []string{"a", "b", "c", "e"}, props[0].TicketIDs)
+
+	// The re-queued tickets must have shed their acceptance-failure reason now
+	// that they are back in a proposal.
+	for _, id := range props[0].TicketIDs {
+		_, ok := mm.StatusReason(id)
+		assert.Falsef(t, ok, "ticket %s should no longer carry a status reason", id)
+		require.NoError(t, mm.Accept(id, id))
+	}
+
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	assert.ElementsMatch(t, []string{"a", "b", "c", "e"}, matches[0].TicketIDs)
+}
+
+// Purpose: Verify the default acceptance-timeout split — accepted tickets re-queue, non-responders time out.
+// Method:  Accept all players on a, b (not c, d), advance FakeClock past the 61s deadline, then Tick.
+// Expect:  a, b → SEARCHING (re-queued, StatusReasonAcceptanceFailed); c, d → TIMED_OUT; no Match; Pending=2.
+func TestAcceptance_TimeoutRequeuesAcceptedTimesOutNonResponders(t *testing.T) {
 	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
 	mm, err := flexi.New([]byte(acceptRS), flexi.WithClock(clock))
 	require.NoError(t, err)
@@ -213,9 +268,45 @@ func TestAcceptance_TimeoutMovesTicketsToTimedOut(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, mm.PendingAcceptances(), 1)
 
-	// Some players accept, but not all; then deadline passes.
+	// a and b accept fully; c and d never respond; then the deadline passes.
 	require.NoError(t, mm.Accept("a", "a"))
 	require.NoError(t, mm.Accept("b", "b"))
+	clock.Advance(61 * time.Second)
+
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	assert.Len(t, matches, 0)
+
+	for _, id := range []string{"a", "b"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		assert.Equalf(t, flexi.StatusSearching, s, "ticket %s", id)
+		reason, ok := mm.StatusReason(id)
+		assert.Truef(t, ok, "ticket %s should carry a status reason", id)
+		assert.Equal(t, flexi.StatusReasonAcceptanceFailed, reason)
+	}
+	for _, id := range []string{"c", "d"} {
+		s, err := mm.Status(id)
+		require.NoError(t, err)
+		assert.Equalf(t, flexi.StatusTimedOut, s, "ticket %s", id)
+	}
+	assert.Len(t, mm.PendingAcceptances(), 0)
+	assert.Equal(t, 2, mm.Pending(), "accepted tickets are back in the queue")
+}
+
+// Purpose: Verify that a fully unanswered proposal times out every ticket (none re-queued).
+// Method:  Let the 61s deadline pass with no acceptances at all, then Tick.
+// Expect:  All four tickets become StatusTimedOut, no Match, PendingAcceptances=0, Pending=0.
+func TestAcceptance_TimeoutWithNoAcceptancesTimesOutAll(t *testing.T) {
+	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
+	mm, err := flexi.New([]byte(acceptRS), flexi.WithClock(clock))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, mm.PendingAcceptances(), 1)
+
 	clock.Advance(61 * time.Second)
 
 	matches, err := mm.Tick()
@@ -228,6 +319,7 @@ func TestAcceptance_TimeoutMovesTicketsToTimedOut(t *testing.T) {
 		assert.Equalf(t, flexi.StatusTimedOut, s, "ticket %s", id)
 	}
 	assert.Len(t, mm.PendingAcceptances(), 0)
+	assert.Equal(t, 0, mm.Pending())
 }
 
 // Purpose: Verify that a partial Accept does not resolve the proposal, and full acceptance does.
@@ -323,6 +415,29 @@ func TestAcceptance_CancelDuringProposalDissolvesIt(t *testing.T) {
 		assert.Equalf(t, flexi.StatusCancelled, s, "ticket %s", id)
 	}
 	assert.Len(t, mm.PendingAcceptances(), 0)
+}
+
+// Purpose: Verify that a ticket re-queued to SEARCHING after a failed acceptance can still be Cancelled.
+// Method:  Reject a proposal so accepted siblings re-queue, then Cancel one re-queued ticket.
+// Expect:  Cancel succeeds, the ticket becomes StatusCancelled, and it leaves the queue (Pending drops).
+func TestCancel_OnRequeuedSearchingTicket(t *testing.T) {
+	mm, err := flexi.New([]byte(acceptRS))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+
+	for _, id := range []string{"a", "b", "c"} {
+		require.NoError(t, mm.Accept(id, id))
+	}
+	require.NoError(t, mm.Reject("d", "d"))
+	require.Equal(t, 3, mm.Pending())
+
+	require.NoError(t, mm.Cancel("a"))
+	s, err := mm.Status("a")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusCancelled, s)
+	assert.Equal(t, 2, mm.Pending(), "cancelled ticket removed from the queue")
 }
 
 // --- Parser / config surface ------------------------------------------------
