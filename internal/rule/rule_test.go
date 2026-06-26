@@ -151,6 +151,55 @@ func TestBatchDistance_PartyAggregation(t *testing.T) {
 	assert.False(t, ok, "max spread 20 should exceed maxDistance 15")
 }
 
+// Purpose: Verify batchDistance string-equivalency mode: a string batchAttribute
+//          batches by value, distance = (distinct values) - 1, so maxDistance=0
+//          requires every player to share one value.
+// Method:  Build batchDistance(batchAttribute="character", maxDistance=0) and
+//          evaluate against all-equal, two-distinct, and three-distinct sets.
+// Expect:  all-equal → true; any value spread → false.
+func TestBatchDistance_StringEquality(t *testing.T) {
+	r := &ruleset.Rule{
+		Name: "x", Type: ruleset.RuleBatchDistance,
+		BatchAttribute: "character", MaxDistance: ptrF(0),
+	}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	ok, err := ev.Evaluate(strCand("warrior", "warrior", "warrior"))
+	require.NoError(t, err)
+	assert.True(t, ok, "identical strings have distance 0")
+
+	ok, err = ev.Evaluate(strCand("warrior", "mage"))
+	require.NoError(t, err)
+	assert.False(t, ok, "two distinct strings have distance 1 > maxDistance 0")
+
+	ok, err = ev.Evaluate(strCand("warrior", "mage", "archer"))
+	require.NoError(t, err)
+	assert.False(t, ok, "three distinct strings have distance 2 > maxDistance 0")
+}
+
+// Purpose: Verify string batchDistance honours a non-zero maxDistance, allowing
+//          up to maxDistance+1 distinct values in the match.
+// Method:  Build batchDistance(batchAttribute="character", maxDistance=1) and
+//          evaluate two-distinct (distance 1) and three-distinct (distance 2) sets.
+// Expect:  two distinct → true; three distinct → false.
+func TestBatchDistance_StringMaxDistance(t *testing.T) {
+	r := &ruleset.Rule{
+		Name: "x", Type: ruleset.RuleBatchDistance,
+		BatchAttribute: "character", MaxDistance: ptrF(1),
+	}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	ok, err := ev.Evaluate(strCand("warrior", "mage"))
+	require.NoError(t, err)
+	assert.True(t, ok, "two distinct strings (distance 1) within maxDistance 1")
+
+	ok, err = ev.Evaluate(strCand("warrior", "mage", "archer"))
+	require.NoError(t, err)
+	assert.False(t, ok, "three distinct strings (distance 2) exceed maxDistance 1")
+}
+
 // Purpose: Verify that the collection/contains operation detects a target value in flatten(players.attributes[modes]).
 // Method:  Evaluate against one player with modes=["TDM","CTF"] using reference value "TDM".
 // Expect:  true is returned.

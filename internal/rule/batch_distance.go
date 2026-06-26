@@ -36,6 +36,13 @@ func (b *batchDistance) Evaluate(c *Candidate) (bool, error) {
 		return true, nil
 	}
 
+	// String attributes are batched by value equivalency rather than numeric
+	// spread: the distance is the count of distinct values present in the match
+	// minus one (so maxDistance=0 requires every player to share one value).
+	if b.isStringMode(c.Players) {
+		return b.evaluateString(c.Players)
+	}
+
 	parties := c.Parties
 	if len(parties) == 0 {
 		// fallback: treat each player as its own party
@@ -72,6 +79,42 @@ func (b *batchDistance) Evaluate(c *Candidate) (bool, error) {
 		return false, nil
 	}
 	if b.minDist != nil && spread < *b.minDist {
+		return false, nil
+	}
+	return true, nil
+}
+
+// isStringMode reports whether the batch attribute is carried as a string by
+// the players, in which case batching uses value equivalency. The kind is read
+// from the first player that declares the attribute.
+func (b *batchDistance) isStringMode(players []core.Player) bool {
+	for _, p := range players {
+		if a, ok := p.Attributes[b.attr]; ok {
+			return a.Kind == core.AttrString
+		}
+	}
+	return false
+}
+
+// evaluateString admits a match when the number of distinct string values for
+// the batch attribute, minus one, stays within the configured bounds.
+func (b *batchDistance) evaluateString(players []core.Player) (bool, error) {
+	seen := make(map[string]struct{})
+	for _, p := range players {
+		a, ok := p.Attributes[b.attr]
+		if !ok || a.Kind != core.AttrString {
+			return false, fmt.Errorf("batchDistance %q: player %q lacks string attr %q", b.name, p.ID, b.attr)
+		}
+		seen[a.S] = struct{}{}
+	}
+	if len(seen) == 0 {
+		return true, nil
+	}
+	distance := float64(len(seen) - 1)
+	if b.maxDist != nil && distance > *b.maxDist {
+		return false, nil
+	}
+	if b.minDist != nil && distance < *b.minDist {
 		return false, nil
 	}
 	return true, nil
