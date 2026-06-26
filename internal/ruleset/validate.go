@@ -150,8 +150,10 @@ func validateRule(r *Rule) error {
 		if r.BatchAttribute == "" {
 			return fmt.Errorf("batchDistance requires batchAttribute")
 		}
-		if r.MaxAttributeDistance == nil {
-			return fmt.Errorf("batchDistance requires maxAttributeDistance")
+		switch r.PartyAggregation {
+		case "", "min", "max", "avg":
+		default:
+			return fmt.Errorf("batchDistance unknown partyAggregation %q", r.PartyAggregation)
 		}
 	case RuleCollection:
 		if len(r.Measurements) == 0 {

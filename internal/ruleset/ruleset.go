@@ -104,9 +104,8 @@ type Rule struct {
 	SortReference string `json:"sortReference,omitempty"`
 
 	// batchDistance
-	BatchAttribute       string   `json:"batchAttribute,omitempty"`
-	MaxAttributeDistance *float64 `json:"maxAttributeDistance,omitempty"`
-	PartyAggregation     string   `json:"partyAggregation,omitempty"`
+	BatchAttribute   string `json:"batchAttribute,omitempty"`
+	PartyAggregation string `json:"partyAggregation,omitempty"`
 
 	// collection
 	MinCount *int `json:"minCount,omitempty"`

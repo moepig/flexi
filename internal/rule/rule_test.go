@@ -74,13 +74,13 @@ func TestDistance(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// Purpose: Verify that the batchDistance rule limits the max skill spread within a candidate to maxAttributeDistance.
+// Purpose: Verify that the batchDistance rule limits the max skill spread within a candidate to maxDistance.
 // Method:  Evaluate against a spread-15 set (10,20,25) and an over-limit set (10,30,50).
 // Expect:  Spread-15 → true; over-limit → false.
 func TestBatchDistance(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleBatchDistance,
-		BatchAttribute: "skill", MaxAttributeDistance: ptrF(15),
+		BatchAttribute: "skill", MaxDistance: ptrF(15),
 	}
 	ev, err := Build(r, nil)
 	require.NoError(t, err)
@@ -88,6 +88,56 @@ func TestBatchDistance(t *testing.T) {
 	assert.True(t, ok)
 	ok, _ = ev.Evaluate(numCand(10, 30, 50))
 	assert.False(t, ok)
+}
+
+// Purpose: Verify that batchDistance without maxDistance always passes (string batching mode).
+// Method:  Evaluate with no distance constraint.
+// Expect:  true regardless of values.
+func TestBatchDistance_NoConstraint(t *testing.T) {
+	r := &ruleset.Rule{
+		Name: "x", Type: ruleset.RuleBatchDistance,
+		BatchAttribute: "mode",
+	}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	ok, _ := ev.Evaluate(numCand(10, 20, 25))
+	assert.True(t, ok)
+}
+
+// Purpose: Verify partyAggregation=avg collapses a multi-player party to its average before comparing.
+// Method:  Two parties: [10,20] (avg=15) and [30,40] (avg=35); spread=20; maxDistance=25.
+// Expect:  true (20 <= 25). Without aggregation, spread would be 30 (40-10).
+func TestBatchDistance_PartyAggregation(t *testing.T) {
+	r := &ruleset.Rule{
+		Name: "x", Type: ruleset.RuleBatchDistance,
+		BatchAttribute: "skill", MaxDistance: ptrF(25),
+		PartyAggregation: "avg",
+	}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	party1 := []core.Player{numPlayer("a", 10), numPlayer("b", 20)}
+	party2 := []core.Player{numPlayer("c", 30), numPlayer("d", 40)}
+	all := append(party1, party2...)
+	c := &Candidate{
+		Players: all,
+		Teams:   map[string][]core.Player{"red": all},
+		Parties: [][]core.Player{party1, party2},
+	}
+	ok, err := ev.Evaluate(c)
+	require.NoError(t, err)
+	assert.True(t, ok, "avg spread 20 should be within maxDistance 25")
+
+	// With max aggregation per party: [10,20]→20, [30,40]→40, spread=20 → exceeds maxDistance=15
+	r2 := &ruleset.Rule{
+		Name: "y", Type: ruleset.RuleBatchDistance,
+		BatchAttribute: "skill", MaxDistance: ptrF(15),
+		PartyAggregation: "max",
+	}
+	ev2, err := Build(r2, nil)
+	require.NoError(t, err)
+	ok, _ = ev2.Evaluate(c)
+	assert.False(t, ok, "max spread 20 should exceed maxDistance 15")
 }
 
 // Purpose: Verify that the collection/contains operation detects a target value in flatten(players.modes).
@@ -159,7 +209,7 @@ func TestCompound(t *testing.T) {
 	r1 := &ruleset.Rule{Name: "a", Type: ruleset.RuleComparison,
 		Measurements: []string{"avg(players.skill)"}, ReferenceValue: json.RawMessage(`50`), Operation: "<="}
 	r2 := &ruleset.Rule{Name: "b", Type: ruleset.RuleBatchDistance,
-		BatchAttribute: "skill", MaxAttributeDistance: ptrF(20)}
+		BatchAttribute: "skill", MaxDistance: ptrF(20)}
 	rc := &ruleset.Rule{Name: "c", Type: ruleset.RuleCompound,
 		Statement: &ruleset.CompoundStatement{Condition: "and", Rules: []string{"a", "b"}}}
 

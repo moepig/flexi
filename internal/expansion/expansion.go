@@ -66,8 +66,6 @@ func setRuleField(r *ruleset.Rule, field string, value json.RawMessage) error {
 		return jsonNumberPtr(value, &r.MaxDistance)
 	case "minDistance":
 		return jsonNumberPtr(value, &r.MinDistance)
-	case "maxAttributeDistance":
-		return jsonNumberPtr(value, &r.MaxAttributeDistance)
 	case "maxLatency":
 		return jsonIntPtr(value, &r.MaxLatency)
 	case "minCount":
@@ -140,10 +138,6 @@ func cloneRule(r ruleset.Rule) ruleset.Rule {
 	if r.MinDistance != nil {
 		v := *r.MinDistance
 		out.MinDistance = &v
-	}
-	if r.MaxAttributeDistance != nil {
-		v := *r.MaxAttributeDistance
-		out.MaxAttributeDistance = &v
 	}
 	if r.MaxLatency != nil {
 		v := *r.MaxLatency

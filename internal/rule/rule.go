@@ -13,9 +13,12 @@ import (
 
 // Candidate is a tentative match: the full player roster grouped by team.
 // Region, when set, names the region the latency rule should evaluate against.
+// Parties groups players by their originating ticket; used by batchDistance
+// partyAggregation. When nil, each player is treated as its own party.
 type Candidate struct {
 	Players []core.Player
 	Teams   map[string][]core.Player
+	Parties [][]core.Player
 	Region  string
 }
 

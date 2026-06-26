@@ -54,7 +54,7 @@ func TestEndToEnd_BasicMatch(t *testing.T) {
 	assert.Equal(t, 0, mm.Pending())
 }
 
-// Purpose: Verify that an expansion step's relaxed maxAttributeDistance is applied after the wait time elapses.
+// Purpose: Verify that an expansion step's relaxed maxDistance is applied after the wait time elapses.
 // Method:  Fix the clock, enqueue two tickets whose skill gap exceeds the initial limit, Tick (no match),
 //
 //	then advance the FakeClock by 31 seconds and Tick again.
@@ -67,10 +67,10 @@ func TestEndToEnd_NoMatchUntilExpansion(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [
 	    {"name": "Tight", "type": "batchDistance",
-	     "batchAttribute": "skill", "maxAttributeDistance": 5}
+	     "batchAttribute": "skill", "maxDistance": 5}
 	  ],
 	  "expansions": [
-	    {"target": "rules[Tight].maxAttributeDistance",
+	    {"target": "rules[Tight].maxDistance",
 	     "steps": [{"waitTimeSeconds": 30, "value": 100}]}
 	  ]
 	}`

@@ -119,6 +119,7 @@ type teamSlot struct {
 	MinPlayers int
 	MaxPlayers int
 	Players    []core.Player
+	Parties    [][]core.Player // each sub-slice = one ticket's players
 }
 
 func expandTeams(rs *ruleset.RuleSet) []teamSlot {
@@ -203,12 +204,14 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 				continue
 			}
 			slots[idx].Players = append(slots[idx].Players, t.Players...)
+			slots[idx].Parties = append(slots[idx].Parties, t.Players)
 			if rulesPassAndRecord(evals, slots, mc) {
 				used[t.ID] = struct{}{}
 				placed = true
 				break
 			}
 			slots[idx].Players = slots[idx].Players[:len(slots[idx].Players)-len(t.Players)]
+			slots[idx].Parties = slots[idx].Parties[:len(slots[idx].Parties)-1]
 		}
 		if !placed && len(used) == 0 {
 			return Result{}, nil, mc.snapshot(), false
@@ -318,13 +321,15 @@ func rulesPassAndRecord(evals []rule.Evaluator, slots []teamSlot, mc *metricsCol
 func buildCandidate(slots []teamSlot, region string) *rule.Candidate {
 	all := []core.Player{}
 	teams := map[string][]core.Player{}
+	var parties [][]core.Player
 	for _, s := range slots {
 		all = append(all, s.Players...)
 		teams[s.Name] = append([]core.Player(nil), s.Players...)
 		// also expose under base name for teams[<base>] expressions
 		teams[s.BaseName] = append(teams[s.BaseName], s.Players...)
+		parties = append(parties, s.Parties...)
 	}
-	return &rule.Candidate{Players: all, Teams: teams, Region: region}
+	return &rule.Candidate{Players: all, Teams: teams, Parties: parties, Region: region}
 }
 
 // teamOrder returns slot indices in the order the algorithm should try when

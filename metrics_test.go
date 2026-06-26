@@ -217,10 +217,10 @@ func TestMetrics_AccumulatesAcrossTicks(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [
 	    {"name": "Tight", "type": "batchDistance",
-	     "batchAttribute": "skill", "maxAttributeDistance": 5}
+	     "batchAttribute": "skill", "maxDistance": 5}
 	  ],
 	  "expansions": [
-	    {"target": "rules[Tight].maxAttributeDistance",
+	    {"target": "rules[Tight].maxDistance",
 	     "steps": [{"waitTimeSeconds": 30, "value": 100}]}
 	  ]
 	}`

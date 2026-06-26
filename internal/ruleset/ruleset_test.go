@@ -48,7 +48,7 @@ const fullRS = `{
     {"name": "Sort", "type": "absoluteSort",
      "sortDirection": "ascending", "sortAttribute": "skill"},
     {"name": "Batch", "type": "batchDistance",
-     "batchAttribute": "skill", "maxAttributeDistance": 5},
+     "batchAttribute": "skill", "maxDistance": 5},
     {"name": "All", "type": "compound",
      "statement": {"condition": "and", "rules": ["FairSkill", "Ping"]}}
   ],

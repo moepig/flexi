@@ -60,14 +60,14 @@ func TestBuild_FormsTwoTeams(t *testing.T) {
 }
 
 // Purpose: Verify that the batchDistance rule causes Build to exclude skill outliers from the match.
-// Method:  Call Build with skills [10, 100, 11, 12] and maxAttributeDistance=5.
+// Method:  Call Build with skills [10, 100, 11, 12] and maxDistance=5.
 // Expect:  One match is formed and the outlier ticket "b" (skill=100) is absent from TicketIDs.
 func TestBuild_RespectsBatchDistance(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
 	  "teams": [{"name": "all", "minPlayers": 3, "maxPlayers": 3}],
 	  "rules": [{"name": "BD", "type": "batchDistance",
-	    "batchAttribute": "skill", "maxAttributeDistance": 5}]
+	    "batchAttribute": "skill", "maxDistance": 5}]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 100), solo("c", 11), solo("d", 12)}
 	out, _, _ := Build(rs, evals(t, rs), tickets)
