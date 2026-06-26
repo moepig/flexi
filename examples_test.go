@@ -209,6 +209,42 @@ func contains(s []string, v string) bool {
 	return false
 }
 
+// Purpose: Verify that multiple party tickets in one match each stay intact on a
+// single team (no party is split across teams).
+// Method:  Two two-player parties into two teams of exactly 2; Tick once.
+// Expect:  One match where each team holds exactly one whole party.
+func TestEndToEnd_MultiplePartiesNotSplit(t *testing.T) {
+	body := `{
+	  "name": "parties",
+	  "teams": [
+	    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
+	    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
+	  ]
+	}`
+	mm, err := flexi.New([]byte(body))
+	require.NoError(t, err)
+	duo1 := flexi.Ticket{ID: "duo1", Players: []flexi.Player{{ID: "p1"}, {ID: "p2"}}}
+	duo2 := flexi.Ticket{ID: "duo2", Players: []flexi.Player{{ID: "p3"}, {ID: "p4"}}}
+	require.NoError(t, mm.Enqueue(duo1))
+	require.NoError(t, mm.Enqueue(duo2))
+
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+
+	duo1Set := map[string]bool{"p1": true, "p2": true}
+	for _, ps := range matches[0].Teams {
+		require.Len(t, ps, 2, "each team holds exactly one duo")
+		inDuo1 := 0
+		for _, p := range ps {
+			if duo1Set[p.ID] {
+				inDuo1++
+			}
+		}
+		assert.True(t, inDuo1 == 0 || inDuo1 == 2, "a duo was split across teams: %v", ps)
+	}
+}
+
 // Purpose: Verify that a playerAttributes default is applied to players that omit
 // the attribute, so rules referencing it still evaluate.
 // Method:  skill defaults to 50; a batchDistance(maxDistance=5) over four tickets
@@ -274,4 +310,73 @@ func TestEndToEnd_ExpansionAgeSelectionOldest(t *testing.T) {
 	matches, err := mm.Tick()
 	require.NoError(t, err)
 	require.Len(t, matches, 1)
+}
+
+// Purpose: Verify expansionAgeSelection="newest" (the default) measures expansion
+// wait time from the most recently added ticket, so a fresh arrival restarts the
+// expansion clock.
+// Method:  Enqueue "a", advance 31s, enqueue "b" (skill gap > initial limit). The
+//
+//	expansion step is 30s. Tick once, then advance 31s and Tick again.
+//
+// Expect:  First Tick forms no match (newest ticket "b" has waited 0s); after a
+//
+//	further 31s the expansion applies and a match forms.
+func TestEndToEnd_ExpansionAgeSelectionNewest(t *testing.T) {
+	body := `{
+	  "name": "expand-newest",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "algorithm": {"expansionAgeSelection": "newest"},
+	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
+	  "rules": [{"name": "Tight", "type": "batchDistance",
+	    "batchAttribute": "skill", "maxDistance": 5}],
+	  "expansions": [{"target": "rules[Tight].maxDistance",
+	    "steps": [{"waitTimeSeconds": 30, "value": 100}]}]
+	}`
+	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
+	mm, err := flexi.New([]byte(body), flexi.WithClock(clock))
+	require.NoError(t, err)
+
+	require.NoError(t, mm.Enqueue(solo("a", 10)))
+	clock.Advance(31 * time.Second)
+	require.NoError(t, mm.Enqueue(solo("b", 80)))
+
+	// Newest ticket "b" has waited 0s, so the expansion has NOT triggered yet.
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	assert.Empty(t, matches)
+
+	// After another 31s the newest ticket has aged past the 30s step.
+	clock.Advance(31 * time.Second)
+	matches, err = mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+}
+
+// Purpose: Verify an absoluteSort rule influences which tickets are matched through
+// the full Enqueue→Tick flow (not just orderBatch in isolation).
+// Method:  One team of exactly 2; four solo tickets a(50,anchor),b(90),c(10),d(30);
+//
+//	absoluteSort ascending by skill. After the anchor, the lowest-skill ticket
+//	is ordered next and joins the anchor's match.
+//
+// Expect:  The first match contains "a" and "c" (not "b").
+func TestEndToEnd_AbsoluteSortInTick(t *testing.T) {
+	body := `{
+	  "name": "sort-tick",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
+	  "rules": [{"name": "S", "type": "absoluteSort",
+	    "sortDirection": "ascending", "sortAttribute": "skill"}]
+	}`
+	mm, err := flexi.New([]byte(body))
+	require.NoError(t, err)
+	for _, tk := range []flexi.Ticket{solo("a", 50), solo("b", 90), solo("c", 10), solo("d", 30)} {
+		require.NoError(t, mm.Enqueue(tk))
+	}
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	require.NotEmpty(t, matches)
+	assert.Equal(t, []string{"a", "c"}, matches[0].TicketIDs,
+		"absoluteSort places the lowest-skill ticket with the anchor")
 }

@@ -152,6 +152,115 @@ func TestStringNumberMap(t *testing.T) {
 	assert.Equal(t, 7.5, got)
 }
 
+// Purpose: Verify the stddev aggregation (population standard deviation).
+// Method:  stddev(players.attributes[skill]) over skill=[10,20,30].
+// Expect:  sqrt(((10-20)^2+(20-20)^2+(30-20)^2)/3) = sqrt(200/3) ≈ 8.1650.
+func TestStddev(t *testing.T) {
+	ctx := &EvalContext{Players: players(10, 20, 30)}
+	n, err := Parse("stddev(players.attributes[skill])")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	got, ok := v.AsNumber()
+	require.True(t, ok)
+	assert.InDelta(t, 8.16497, got, 1e-4)
+}
+
+// Purpose: Verify teams[<name>].players[playerId] resolves to the team's player IDs.
+// Method:  Red team with players r1/r2; evaluate teams[red].players[playerId].
+// Expect:  The string list ["r1","r2"].
+func TestPlayerIDs(t *testing.T) {
+	ctx := &EvalContext{
+		TeamPlayers: map[string][]core.Player{
+			"red": {{ID: "r1"}, {ID: "r2"}},
+		},
+	}
+	n, err := Parse("teams[red].players[playerId]")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	strs, ok := v.FlattenStrings()
+	require.True(t, ok)
+	assert.Equal(t, []string{"r1", "r2"}, strs)
+}
+
+// Purpose: Verify count over a single team yields a scalar, and over teams[*] yields
+// a per-team list (FlexMatch's nested-aggregation semantics).
+// Method:  red=[10,20], blue=[40,60,80]; evaluate count(teams[red].players) and
+//
+//	count(teams[*].players).
+//
+// Expect:  count(teams[red].players)=2; count(teams[*].players)=[2,3].
+func TestCount_PlayersScalarAndList(t *testing.T) {
+	ctx := &EvalContext{
+		TeamPlayers: map[string][]core.Player{
+			"red":  players(10, 20),
+			"blue": players(40, 60, 80),
+		},
+		TeamOrder: []string{"red", "blue"},
+	}
+	n, err := Parse("count(teams[red].players)")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	got, ok := v.AsNumber()
+	require.True(t, ok)
+	assert.Equal(t, 2.0, got)
+
+	n, err = Parse("count(teams[*].players)")
+	require.NoError(t, err)
+	v, err = Eval(n, ctx)
+	require.NoError(t, err)
+	nums, ok := v.FlattenNumbers()
+	require.True(t, ok)
+	assert.Equal(t, []float64{2, 3}, nums)
+}
+
+// Purpose: Verify set_intersection maps over teams (per-team intersection) for a
+// teams[*] scope.
+// Method:  red players share "CTF"; blue players share "TDM"; evaluate
+//
+//	set_intersection(teams[*].players.attributes[modes]).
+//
+// Expect:  A per-team result: [["CTF"], ["TDM"]].
+func TestSetIntersection_PerTeam(t *testing.T) {
+	ctx := &EvalContext{
+		TeamPlayers: map[string][]core.Player{
+			"red":  {{Attributes: core.Attributes{"modes": sl("CTF", "FFA")}}, {Attributes: core.Attributes{"modes": sl("CTF", "TDM")}}},
+			"blue": {{Attributes: core.Attributes{"modes": sl("TDM", "FFA")}}, {Attributes: core.Attributes{"modes": sl("TDM", "CTF")}}},
+		},
+		TeamOrder: []string{"red", "blue"},
+	}
+	n, err := Parse("set_intersection(teams[*].players.attributes[modes])")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	require.Equal(t, KindList, v.Kind)
+	require.Len(t, v.List, 2)
+	red, _ := v.List[0].FlattenStrings()
+	blue, _ := v.List[1].FlattenStrings()
+	assert.Equal(t, []string{"CTF"}, red)
+	assert.Equal(t, []string{"TDM"}, blue)
+}
+
+// Purpose: Verify that indexing a string_number_map with a key no player has yields
+// an empty aggregation (KindNone), not an error.
+// Method:  Players carry items[sword]; evaluate avg(players.attributes[items][shield]).
+// Expect:  The result is KindNone (no values to average).
+func TestStringNumberMap_MissingKey(t *testing.T) {
+	ctx := &EvalContext{
+		Players: []core.Player{
+			{Attributes: core.Attributes{"items": sdm(map[string]float64{"sword": 5})}},
+			{Attributes: core.Attributes{"items": sdm(map[string]float64{"sword": 10})}},
+		},
+	}
+	n, err := Parse("avg(players.attributes[items][shield])")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	assert.Equal(t, KindNone, v.Kind)
+}
+
 // Purpose: Verify that representative malformed expressions are rejected by Parse.
 // Method:  Run sub-tests for: empty string, attribute access missing attributes[...],
 //
@@ -167,6 +276,11 @@ func TestParseErrors(t *testing.T) {
 		"players.attributes", // missing [attr]
 		"foo bar",
 		"avg(",
+		"players[bogus]",                  // only [playerId] is valid
+		"teams[].players",                 // empty team name
+		"teams[*]",                        // missing .players
+		"avg(players.attributes[skill]",   // unclosed call
+		"set_intersection(players.modes)", // missing .attributes
 	}
 	for _, src := range bad {
 		t.Run(src, func(t *testing.T) {

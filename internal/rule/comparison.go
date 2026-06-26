@@ -13,6 +13,9 @@ type comparison struct {
 	ref      parsedRef
 	op       string
 	partyAgg string
+	// acrossPlayers selects the "compare across players" form (no referenceValue,
+	// only = or !=): every measured value must be equal (=) or all distinct (!=).
+	acrossPlayers bool
 }
 
 func buildComparison(r *ruleset.Rule) (Evaluator, error) {
@@ -24,19 +27,28 @@ func buildComparison(r *ruleset.Rule) (Evaluator, error) {
 	if err != nil {
 		return nil, err
 	}
+	c := &comparison{name: r.Name, measures: ms, ref: ref, op: r.Operation, partyAgg: r.PartyAggregation}
 	if ref.Node == nil {
-		return nil, fmt.Errorf("comparison %q: referenceValue required", r.Name)
+		// "Compare across players" form: FlexMatch allows only = or != when no
+		// referenceValue is supplied.
+		if r.Operation != "=" && r.Operation != "!=" {
+			return nil, fmt.Errorf("comparison %q: referenceValue required for operation %q", r.Name, r.Operation)
+		}
+		c.acrossPlayers = true
 	}
-	return &comparison{name: r.Name, measures: ms, ref: ref, op: r.Operation, partyAgg: r.PartyAggregation}, nil
+	return c, nil
 }
 
 func (c *comparison) Name() string { return c.name }
 
 func (c *comparison) Evaluate(cand *Candidate) (bool, error) {
-	if c.partyAgg != "" {
-		cand = aggregateCandidate(cand, c.partyAgg)
-	}
+	// partyAggregation defaults to "avg" per the FlexMatch spec; aggregateCandidate
+	// applies that default and is a no-op when the candidate carries no parties.
+	cand = aggregateCandidate(cand, c.partyAgg)
 	ctx := cand.evalContext()
+	if c.acrossPlayers {
+		return c.evaluateAcrossPlayers(ctx)
+	}
 	refV, err := expr.Eval(c.ref.Node, ctx)
 	if err != nil {
 		return false, err
@@ -61,6 +73,70 @@ func (c *comparison) Evaluate(cand *Candidate) (bool, error) {
 		}
 	}
 	return true, nil
+}
+
+// evaluateAcrossPlayers implements the referenceValue-less = / != form: each
+// measurement is flattened to the values of all players, then required to be all
+// equal (=) or all distinct (!=).
+func (c *comparison) evaluateAcrossPlayers(ctx *expr.EvalContext) (bool, error) {
+	for _, m := range c.measures {
+		v, err := expr.Eval(m, ctx)
+		if err != nil {
+			return false, err
+		}
+		if nums, ok := v.FlattenNumbers(); ok {
+			if !crossCompareNum(nums, c.op) {
+				return false, nil
+			}
+			continue
+		}
+		if strs, ok := v.FlattenStrings(); ok {
+			if !crossCompareStr(strs, c.op) {
+				return false, nil
+			}
+			continue
+		}
+		return false, fmt.Errorf("comparison %q: measurement is neither numeric nor string", c.name)
+	}
+	return true, nil
+}
+
+func crossCompareNum(vals []float64, op string) bool {
+	if op == "=" {
+		for _, v := range vals {
+			if v != vals[0] {
+				return false
+			}
+		}
+		return true
+	}
+	seen := make(map[float64]struct{}, len(vals))
+	for _, v := range vals {
+		if _, dup := seen[v]; dup {
+			return false
+		}
+		seen[v] = struct{}{}
+	}
+	return true
+}
+
+func crossCompareStr(vals []string, op string) bool {
+	if op == "=" {
+		for _, v := range vals {
+			if v != vals[0] {
+				return false
+			}
+		}
+		return true
+	}
+	seen := make(map[string]struct{}, len(vals))
+	for _, v := range vals {
+		if _, dup := seen[v]; dup {
+			return false
+		}
+		seen[v] = struct{}{}
+	}
+	return true
 }
 
 func compareValues(a, b expr.Value, op string) (bool, error) {

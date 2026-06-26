@@ -1,6 +1,7 @@
 package algorithm
 
 import (
+	"fmt"
 	"sort"
 	"testing"
 
@@ -192,4 +193,164 @@ func sumSkill(ps []core.Player) float64 {
 		s += p.Attributes["skill"].N
 	}
 	return s
+}
+
+func soloMap(id string, m map[string]float64) core.Ticket {
+	return core.Ticket{ID: id, Players: []core.Player{{
+		ID: id, Attributes: core.Attributes{"ping": {Kind: core.AttrStringNumberMap, SDM: m}},
+	}}}
+}
+
+func party(id string, skills ...float64) core.Ticket {
+	ps := make([]core.Player, len(skills))
+	for i, s := range skills {
+		ps[i] = core.Player{ID: id, Attributes: core.Attributes{"skill": num(s)}}
+	}
+	return core.Ticket{ID: id, Players: ps}
+}
+
+// Purpose: Verify an absoluteSort rule honours sortDirection "descending".
+// Method:  Anchor "a" plus three tickets; sort descending by skill.
+// Expect:  Anchor stays first; the rest follow in descending skill order.
+func TestOrderBatch_AbsoluteSort_Descending(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+	  "rules": [{"name": "S", "type": "absoluteSort",
+	    "sortDirection": "descending", "sortAttribute": "skill"}]
+	}`)
+	tickets := []core.Ticket{solo("a", 50), solo("b", 90), solo("c", 10), solo("d", 30)}
+	out := orderBatch(rs, tickets)
+	assert.Equal(t, []string{"a", "b", "d", "c"}, ids(out))
+}
+
+// Purpose: Verify absoluteSort reduces a string_number_map attribute via mapKey
+// (minValue vs maxValue) before sorting.
+// Method:  Tickets with ping maps; sort ascending by mapKey minValue, then maxValue.
+// Expect:  minValue orders by each ticket's lowest ping; maxValue by its highest.
+func TestOrderBatch_AbsoluteSort_MapKey(t *testing.T) {
+	mk := func(mapKey string) []string {
+		rs := newRS(t, `{
+		  "name": "x",
+		  "playerAttributes": [{"name":"ping","type":"string_number_map"}],
+		  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+		  "rules": [{"name": "S", "type": "absoluteSort",
+		    "sortDirection": "ascending", "sortAttribute": "ping", "mapKey": "`+mapKey+`"}]
+		}`)
+		tickets := []core.Ticket{
+			soloMap("a", map[string]float64{"x": 0}),
+			soloMap("b", map[string]float64{"x": 90}),
+			soloMap("c", map[string]float64{"x": 10, "y": 50}),
+			soloMap("d", map[string]float64{"x": 30}),
+		}
+		return ids(orderBatch(rs, tickets))
+	}
+	// minValue: c→10, d→30, b→90
+	assert.Equal(t, []string{"a", "c", "d", "b"}, mk("minValue"))
+	// maxValue: d→30, c→50, b→90
+	assert.Equal(t, []string{"a", "d", "c", "b"}, mk("maxValue"))
+}
+
+// Purpose: Verify absoluteSort reduces a multi-player party to a scalar via
+// partyAggregation before sorting.
+// Method:  Anchor "a", a party [10,90], and solo "s"=40; sort ascending by skill.
+// Expect:  avg → party scores 50 (after s); min → party scores 10 (before s).
+func TestOrderBatch_AbsoluteSort_PartyAggregation(t *testing.T) {
+	mk := func(agg string) []string {
+		rs := newRS(t, `{
+		  "name": "x",
+		  "playerAttributes": [{"name":"skill","type":"number"}],
+		  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+		  "rules": [{"name": "S", "type": "absoluteSort",
+		    "sortDirection": "ascending", "sortAttribute": "skill", "partyAggregation": "`+agg+`"}]
+		}`)
+		tickets := []core.Ticket{solo("a", 0), party("p", 10, 90), solo("s", 40)}
+		return ids(orderBatch(rs, tickets))
+	}
+	assert.Equal(t, []string{"a", "s", "p"}, mk("avg")) // party avg 50 > 40
+	assert.Equal(t, []string{"a", "p", "s"}, mk("min")) // party min 10 < 40
+}
+
+// Purpose: Verify batchingPreference "sorted" applies sortByAttributes in priority
+// order, using a later attribute only to break ties.
+// Method:  Sort by ["tier","skill"]; tickets share tiers but differ in skill.
+// Expect:  Grouped by tier ascending, then skill ascending within a tier.
+func TestOrderBatch_SortByAttributes_Tiebreak(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"tier","type":"string"},{"name":"skill","type":"number"}],
+	  "algorithm": {"strategy": "exhaustiveSearch", "batchingPreference": "sorted",
+	    "sortByAttributes": ["tier", "skill"]},
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}]
+	}`)
+	mk := func(id, tier string, skill float64) core.Ticket {
+		return core.Ticket{ID: id, Players: []core.Player{{ID: id, Attributes: core.Attributes{
+			"tier": {Kind: core.AttrString, S: tier}, "skill": num(skill)}}}}
+	}
+	tickets := []core.Ticket{
+		mk("a", "gold", 90), mk("b", "bronze", 50), mk("c", "gold", 10), mk("d", "bronze", 20),
+	}
+	out := orderBatch(rs, tickets)
+	// bronze before gold; within each, ascending skill.
+	assert.Equal(t, []string{"d", "b", "c", "a"}, ids(out))
+}
+
+// Purpose: Verify non-sorting batchingPreferences keep the incoming queue order
+// (flexi treats "random"/"largestPopulation"/"fastestRegion" as deterministic).
+// Method:  exhaustiveSearch + "random" with no sort rules; check order is preserved.
+// Expect:  orderBatch returns the tickets in their original order.
+func TestOrderBatch_RandomKeepsQueueOrder(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "algorithm": {"strategy": "exhaustiveSearch", "batchingPreference": "random"},
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}]
+	}`)
+	tickets := []core.Ticket{solo("a", 50), solo("b", 90), solo("c", 10), solo("d", 30)}
+	out := orderBatch(rs, tickets)
+	assert.Equal(t, []string{"a", "b", "c", "d"}, ids(out))
+}
+
+// Purpose: Document that backfillPriority is validated but does not alter match
+// formation in flexi (backfill ticket handling is out of scope).
+// Method:  Form a match with the default priority and with backfillPriority="high".
+// Expect:  Both produce a match over the same tickets.
+func TestBuild_BackfillPriorityIsNoop(t *testing.T) {
+	tickets := []core.Ticket{solo("a", 1), solo("b", 2)}
+	rsDefault := newRS(t, `{"name":"x","teams":[{"name":"all","minPlayers":2,"maxPlayers":2}]}`)
+	rsHigh := newRS(t, `{"name":"x","algorithm":{"backfillPriority":"high"},
+	  "teams":[{"name":"all","minPlayers":2,"maxPlayers":2}]}`)
+	outD, _, _ := Build(rsDefault, evals(t, rsDefault), tickets)
+	outH, _, _ := Build(rsHigh, evals(t, rsHigh), tickets)
+	require.Len(t, outD, 1)
+	require.Len(t, outH, 1)
+	assert.ElementsMatch(t, outD[0].TicketIDs, outH[0].TicketIDs)
+}
+
+// Purpose: Verify the balanced strategy forms a large match (>40 players) and keeps
+// per-team sums of the balanced attribute close.
+// Method:  Two teams of 25; 50 solo tickets with skills 0..49; strategy=balanced.
+// Expect:  One match with 25 players per team and team skill sums within a small delta.
+func TestBuild_BalancedLargeMatch(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "algorithm": {"strategy": "balanced", "balancedAttribute": "skill"},
+	  "teams": [
+	    {"name": "red",  "minPlayers": 25, "maxPlayers": 25},
+	    {"name": "blue", "minPlayers": 25, "maxPlayers": 25}
+	  ]
+	}`)
+	tickets := make([]core.Ticket, 0, 50)
+	for i := 0; i < 50; i++ {
+		tickets = append(tickets, solo(fmt.Sprintf("t%02d", i), float64(i)))
+	}
+	out, _, _ := Build(rs, evals(t, rs), tickets)
+	require.Len(t, out, 1)
+	assert.Len(t, out[0].Teams["red"], 25)
+	assert.Len(t, out[0].Teams["blue"], 25)
+	red := sumSkill(out[0].Teams["red"])
+	blue := sumSkill(out[0].Teams["blue"])
+	assert.InDelta(t, red, blue, 25, "red=%v blue=%v", red, blue)
 }

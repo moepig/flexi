@@ -84,6 +84,18 @@ func TestParse_Full(t *testing.T) {
 	assert.Equal(t, 2, len(rs.Expansions[0].Steps))
 }
 
+// Purpose: Verify the comparison "compare across players" form parses without a
+// referenceValue when the operation is = or != (FlexMatch spec).
+// Method:  Parse a rule set whose comparison rule omits referenceValue and uses !=.
+// Expect:  No error.
+func TestParse_ComparisonAcrossPlayers(t *testing.T) {
+	body := `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+	  "rules":[{"name":"diff","type":"comparison","measurements":["players.attributes[char]"],"operation":"!="}]}`
+	rs, err := Parse([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, rs.Rules, 1)
+}
+
 // Purpose: Verify that representative invalid inputs are rejected by Parse with ErrInvalidRuleSet.
 // Method:  Run sub-tests for: missing teams, malformed JSON, unknown rule type, unknown rule reference,
 //
@@ -115,6 +127,8 @@ func TestParse_Errors(t *testing.T) {
 		           {"name":"c","type":"compound","statement":"not(bd)"}]}`,
 		"latency distanceReference needs maxDistance": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"l","type":"latency","maxLatency":100,"distanceReference":"min"}]}`,
+		"comparison without referenceValue needs = or !=": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"c","type":"comparison","measurements":["players.attributes[skill]"],"operation":"<="}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

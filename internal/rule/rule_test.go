@@ -11,8 +11,19 @@ import (
 )
 
 func num(v float64) core.Attribute { return core.Attribute{Kind: core.AttrNumber, N: v} }
+func str(v string) core.Attribute  { return core.Attribute{Kind: core.AttrString, S: v} }
 func sl(v ...string) core.Attribute {
 	return core.Attribute{Kind: core.AttrStringList, SL: append([]string(nil), v...)}
+}
+
+// strCand builds a single-team candidate whose players each carry a "character"
+// string attribute.
+func strCand(chars ...string) *Candidate {
+	pl := make([]core.Player, len(chars))
+	for i, ch := range chars {
+		pl[i] = core.Player{ID: "p", Attributes: core.Attributes{"character": str(ch)}}
+	}
+	return &Candidate{Players: pl, Teams: map[string][]core.Player{"red": pl}, TeamOrder: []string{"red"}}
 }
 
 func numPlayer(id string, skill float64) core.Player {
@@ -286,12 +297,13 @@ func TestLatency_DistanceReference(t *testing.T) {
 	assert.False(t, ok)
 }
 
-// Purpose: Verify comparison partyAggregation collapses each party before comparing.
-// Method:  comparison max(players.attributes[skill]) <= 30 with partyAggregation=avg.
+// Purpose: Verify comparison partyAggregation collapses each party before comparing,
+// and that an omitted partyAggregation defaults to "avg" (FlexMatch spec).
+// Method:  comparison max(players.attributes[skill]) <= 30 over one party [20,40]
 //
-//	One party [20,40] (avg=30) and one solo [25]; aggregated max is 30.
+//	and one solo [25]. avg collapses the party to 30; max collapses it to 40.
 //
-// Expect:  true with avg aggregation (party becomes 30); false without (raw 40 > 30).
+// Expect:  avg and "" (default) → true (party becomes 30); max → false (party is 40).
 func TestComparison_PartyAggregation(t *testing.T) {
 	mk := func(agg string) Evaluator {
 		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleComparison,
@@ -315,7 +327,10 @@ func TestComparison_PartyAggregation(t *testing.T) {
 	assert.True(t, ok, "avg-aggregated party max is 30")
 
 	ok, _ = mk("").Evaluate(c)
-	assert.False(t, ok, "without aggregation raw max is 40")
+	assert.True(t, ok, "omitted partyAggregation defaults to avg → party max is 30")
+
+	ok, _ = mk("max").Evaluate(c)
+	assert.False(t, ok, "max-aggregated party is 40 > 30")
 }
 
 // Purpose: Verify collection partyAggregation=intersection narrows a party to its
@@ -351,4 +366,379 @@ func TestCollection_PartyIntersection(t *testing.T) {
 
 	ok, _ = mk("intersection").Evaluate(c)
 	assert.False(t, ok, "intersection drops CTF (only TDM shared)")
+
+	// A-3: omitting partyAggregation defaults to "union".
+	ok, _ = mk("").Evaluate(c)
+	assert.True(t, ok, "default partyAggregation is union → keeps CTF")
+}
+
+// Purpose: Verify the comparison "compare across players" form (no referenceValue,
+// only = or !=) per the FlexMatch spec.
+// Method:  != requires every player's character to differ; = requires them equal.
+// Expect:  != true for all-distinct, false on a duplicate; = true for all-equal.
+func TestComparison_AcrossPlayers(t *testing.T) {
+	mk := func(op string) Evaluator {
+		r := &ruleset.Rule{Name: "diffChars", Type: ruleset.RuleComparison,
+			Measurements: []string{"players.attributes[character]"}, Operation: op}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+
+	ne := mk("!=")
+	ok, err := ne.Evaluate(strCand("mage", "rogue", "tank"))
+	require.NoError(t, err)
+	assert.True(t, ok, "all distinct characters satisfy !=")
+	ok, _ = ne.Evaluate(strCand("mage", "rogue", "mage"))
+	assert.False(t, ok, "duplicate character fails !=")
+
+	eq := mk("=")
+	ok, _ = eq.Evaluate(strCand("mage", "mage"))
+	assert.True(t, ok, "all-equal satisfies =")
+	ok, _ = eq.Evaluate(strCand("mage", "rogue"))
+	assert.False(t, ok, "differing values fail =")
+
+	// Numeric attribute across players (e.g. distinct spawn slots).
+	mkNum := func(op string) Evaluator {
+		r := &ruleset.Rule{Name: "slots", Type: ruleset.RuleComparison,
+			Measurements: []string{"players.attributes[skill]"}, Operation: op}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	ok, _ = mkNum("!=").Evaluate(numCand(10, 20, 30))
+	assert.True(t, ok, "distinct numeric values satisfy !=")
+	ok, _ = mkNum("!=").Evaluate(numCand(10, 20, 10))
+	assert.False(t, ok, "duplicate numeric value fails !=")
+	ok, _ = mkNum("=").Evaluate(numCand(30, 30))
+	assert.True(t, ok, "equal numeric values satisfy =")
+}
+
+// Purpose: Verify that distance defaults partyAggregation to "avg" (FlexMatch spec).
+// Method:  reference 10; maxDistance 5; one party [10,30] (avg=20, diff 10) collapsed.
+// Expect:  default ("") and avg → false (diff 10 > 5); min → true (party becomes 10).
+func TestDistance_PartyAggregationDefault(t *testing.T) {
+	mk := func(agg string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleDistance,
+			Measurements:   []string{"players.attributes[skill]"},
+			ReferenceValue: json.RawMessage(`10`), MaxDistance: ptrF(5), PartyAggregation: agg}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	party := []core.Player{numPlayer("a", 10), numPlayer("b", 30)}
+	c := &Candidate{
+		Players:     party,
+		Teams:       map[string][]core.Player{"red": party},
+		TeamOrder:   []string{"red"},
+		TeamParties: map[string][][]core.Player{"red": {party}},
+	}
+	ok, err := mk("").Evaluate(c)
+	require.NoError(t, err)
+	assert.False(t, ok, "default avg → party 20, diff 10 > 5")
+
+	ok, _ = mk("min").Evaluate(c)
+	assert.True(t, ok, "min → party 10, diff 0 <= 5")
+}
+
+// Purpose: Verify latency aggregates a party's per-region latencies (default avg).
+// Method:  maxLatency 100; one party [us-east-1: 60, 120] (avg 90) collapsed.
+// Expect:  default avg → true (90 <= 100); max → false (120 > 100).
+func TestLatency_PartyAggregation(t *testing.T) {
+	mk := func(agg string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(100), PartyAggregation: agg}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	party := []core.Player{
+		{ID: "a", Latencies: map[string]int{"us-east-1": 60}},
+		{ID: "b", Latencies: map[string]int{"us-east-1": 120}},
+	}
+	c := &Candidate{
+		Players:     party,
+		Teams:       map[string][]core.Player{"red": party},
+		TeamOrder:   []string{"red"},
+		TeamParties: map[string][][]core.Player{"red": {party}},
+	}
+	ok, err := mk("").Evaluate(c)
+	require.NoError(t, err)
+	assert.True(t, ok, "default avg → 90 <= 100")
+
+	ok, _ = mk("max").Evaluate(c)
+	assert.False(t, ok, "max → 120 > 100")
+}
+
+// Purpose: Verify the collection intersection operation, including minCount/maxCount
+// bounds (A-4) and the unbounded overlap form.
+// Method:  measurement set [TDM,CTF,FFA] against reference [TDM,CTF] (overlap 2).
+// Expect:  unbounded → true; minCount 2 → true; minCount 3 → false; maxCount 1 → false.
+func TestCollection_Intersection(t *testing.T) {
+	mk := func(min, max *int) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleCollection,
+			Measurements:   []string{"flatten(players.attributes[modes])"},
+			Operation:      "intersection",
+			ReferenceValue: json.RawMessage(`["TDM","CTF"]`),
+			MinCount:       min, MaxCount: max}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	pl := []core.Player{{Attributes: core.Attributes{"modes": sl("TDM", "CTF", "FFA")}}}
+	c := &Candidate{Players: pl}
+
+	ok, err := mk(nil, nil).Evaluate(c)
+	require.NoError(t, err)
+	assert.True(t, ok, "overlap 2 > 0 satisfies unbounded intersection")
+
+	ok, _ = mk(ptrI(2), nil).Evaluate(c)
+	assert.True(t, ok, "overlap 2 >= minCount 2")
+
+	ok, _ = mk(ptrI(3), nil).Evaluate(c)
+	assert.False(t, ok, "overlap 2 < minCount 3")
+
+	ok, _ = mk(nil, ptrI(1)).Evaluate(c)
+	assert.False(t, ok, "overlap 2 > maxCount 1")
+}
+
+// Purpose: Verify the collection not_contains operation (a flexi extension; not part
+// of the AWS FlexMatch operation set).
+// Method:  not_contains "CTF" over a player whose modes lack / include CTF.
+// Expect:  absent → true; present → false.
+func TestCollection_NotContains(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleCollection,
+		Measurements:   []string{"flatten(players.attributes[modes])"},
+		Operation:      "not_contains",
+		ReferenceValue: json.RawMessage(`"CTF"`)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	absent := []core.Player{{Attributes: core.Attributes{"modes": sl("TDM", "FFA")}}}
+	ok, err := ev.Evaluate(&Candidate{Players: absent})
+	require.NoError(t, err)
+	assert.True(t, ok, "CTF absent → not_contains true")
+
+	present := []core.Player{{Attributes: core.Attributes{"modes": sl("TDM", "CTF")}}}
+	ok, _ = ev.Evaluate(&Candidate{Players: present})
+	assert.False(t, ok, "CTF present → not_contains false")
+}
+
+// Purpose: Verify every comparison operator against a numeric reference value.
+// Method:  measurement players.attributes[skill]=50 compared to referenceValue 50.
+// Expect:  =,<=,>= pass; !=,<,> fail.
+func TestComparison_NumericOperators(t *testing.T) {
+	cases := map[string]bool{"=": true, "!=": false, "<": false, "<=": true, ">": false, ">=": true}
+	for op, want := range cases {
+		t.Run(op, func(t *testing.T) {
+			r := &ruleset.Rule{Name: "x", Type: ruleset.RuleComparison,
+				Measurements:   []string{"players.attributes[skill]"},
+				ReferenceValue: json.RawMessage(`50`), Operation: op}
+			ev, err := Build(r, nil)
+			require.NoError(t, err)
+			ok, err := ev.Evaluate(numCand(50))
+			require.NoError(t, err)
+			assert.Equal(t, want, ok, "skill 50 %s 50", op)
+		})
+	}
+}
+
+// Purpose: Verify string comparison supports = and != against a reference string,
+// and that an ordering operator on strings simply fails (no panic/error).
+// Method:  character "mage" compared to "mage" / "rogue" with =, !=, and <.
+// Expect:  = matches equal; != matches differing; < yields false.
+func TestComparison_StringOperators(t *testing.T) {
+	mk := func(ref, op string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleComparison,
+			Measurements:   []string{"players.attributes[character]"},
+			ReferenceValue: json.RawMessage(`"` + ref + `"`), Operation: op}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	ok, err := mk("mage", "=").Evaluate(strCand("mage"))
+	require.NoError(t, err)
+	assert.True(t, ok)
+	ok, _ = mk("rogue", "!=").Evaluate(strCand("mage"))
+	assert.True(t, ok)
+	ok, _ = mk("mage", "<").Evaluate(strCand("mage"))
+	assert.False(t, ok, "ordering operators are unsupported on strings → false")
+}
+
+// Purpose: Verify the distance rule's minDistance lower bound and min+max band.
+// Method:  reference 0, measurement = single skill value; minDistance 10, maxDistance 30.
+// Expect:  skill 5 → false (too close); 20 → true; 40 → false (too far).
+func TestDistance_MinDistance(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleDistance,
+		Measurements:   []string{"players.attributes[skill]"},
+		ReferenceValue: json.RawMessage(`0`),
+		MinDistance:    ptrF(10), MaxDistance: ptrF(30)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	ok, _ := ev.Evaluate(numCand(5))
+	assert.False(t, ok, "diff 5 < minDistance 10")
+	ok, _ = ev.Evaluate(numCand(20))
+	assert.True(t, ok, "diff 20 within [10,30]")
+	ok, _ = ev.Evaluate(numCand(40))
+	assert.False(t, ok, "diff 40 > maxDistance 30")
+}
+
+// Purpose: Verify batchDistance minDistance (lower spread bound) and the single-party
+// short-circuit (a batch of one party always passes).
+// Method:  minDistance 10 over spreads 5 and 20; then a single-party candidate.
+// Expect:  spread 5 → false; spread 20 → true; single party → true.
+func TestBatchDistance_MinDistance(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleBatchDistance,
+		BatchAttribute: "skill", MinDistance: ptrF(10)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	p1 := []core.Player{numPlayer("a", 10)}
+	p2 := []core.Player{numPlayer("b", 15)}
+	tight := &Candidate{Players: append(append([]core.Player{}, p1...), p2...), Parties: [][]core.Player{p1, p2}}
+	ok, _ := ev.Evaluate(tight)
+	assert.False(t, ok, "spread 5 < minDistance 10")
+
+	p3 := []core.Player{numPlayer("c", 30)}
+	wide := &Candidate{Players: append(append([]core.Player{}, p1...), p3...), Parties: [][]core.Player{p1, p3}}
+	ok, _ = ev.Evaluate(wide)
+	assert.True(t, ok, "spread 20 >= minDistance 10")
+
+	single := &Candidate{Players: p1, Parties: [][]core.Player{p1}}
+	ok, _ = ev.Evaluate(single)
+	assert.True(t, ok, "single party always passes")
+}
+
+// Purpose: Verify the latency rule ignores regions above maxLatency and accepts a
+// match when a different shared region is within the limit; also exercise
+// distanceReference=avg.
+// Method:  Players share us-west-2 (over limit) and us-east-1 (under). maxLatency 100.
+// Expect:  passes via us-east-1. With distanceReference=avg+maxDistance, a wide
+//
+//	spread in the only viable region fails.
+func TestLatency_IgnoresHighRegionAndAvgDistance(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(100)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	pl := []core.Player{
+		{Latencies: map[string]int{"us-east-1": 40, "us-west-2": 250}},
+		{Latencies: map[string]int{"us-east-1": 60, "us-west-2": 300}},
+	}
+	ok, err := ev.Evaluate(&Candidate{Players: pl})
+	require.NoError(t, err)
+	assert.True(t, ok, "us-east-1 under limit for both; us-west-2 ignored")
+
+	// distanceReference=avg, maxDistance=20: us-east-1 latencies 40 and 60, avg 50,
+	// each 10 from avg → within 20 → still passes.
+	rAvg := &ruleset.Rule{Name: "y", Type: ruleset.RuleLatency,
+		MaxLatency: ptrI(100), DistanceReference: "avg", MaxDistance: ptrF(20)}
+	evAvg, err := Build(rAvg, nil)
+	require.NoError(t, err)
+	ok, _ = evAvg.Evaluate(&Candidate{Players: pl})
+	assert.True(t, ok, "spread within maxDistance of avg")
+
+	// Tighten maxDistance to 5: 40 and 60 are 10 from avg 50 → exceeds → fail.
+	rTight := &ruleset.Rule{Name: "z", Type: ruleset.RuleLatency,
+		MaxLatency: ptrI(100), DistanceReference: "avg", MaxDistance: ptrF(5)}
+	evTight, err := Build(rTight, nil)
+	require.NoError(t, err)
+	ok, _ = evTight.Evaluate(&Candidate{Players: pl})
+	assert.False(t, ok, "spread exceeds maxDistance of avg")
+}
+
+// Purpose: Verify compound not / or operators and nested statements.
+// Method:  children a=avg<=50, b=max>=80; evaluate not(a), or(a,b), and(a, not(b)).
+// Expect:  match the boolean algebra for each player set.
+func TestCompound_NotOrNested(t *testing.T) {
+	a := &ruleset.Rule{Name: "a", Type: ruleset.RuleComparison,
+		Measurements: []string{"avg(players.attributes[skill])"}, ReferenceValue: json.RawMessage(`50`), Operation: "<="}
+	b := &ruleset.Rule{Name: "b", Type: ruleset.RuleComparison,
+		Measurements: []string{"max(players.attributes[skill])"}, ReferenceValue: json.RawMessage(`80`), Operation: ">="}
+	others := map[string]Evaluator{}
+	for _, r := range []*ruleset.Rule{a, b} {
+		ev, err := Build(r, others)
+		require.NoError(t, err)
+		others[r.Name] = ev
+	}
+	build := func(stmt string) Evaluator {
+		ev, err := Build(&ruleset.Rule{Name: "c", Type: ruleset.RuleCompound, Statement: stmt}, others)
+		require.NoError(t, err)
+		return ev
+	}
+
+	low := numCand(10, 20, 30)  // a:true (avg20), b:false (max30)
+	high := numCand(85, 90)     // a:false (avg87), b:true (max90)
+	mixed := numCand(10, 90)    // a:true (avg50), b:true (max90)
+
+	// not(a)
+	ok, _ := build("not(a)").Evaluate(low)
+	assert.False(t, ok)
+	ok, _ = build("not(a)").Evaluate(high)
+	assert.True(t, ok)
+
+	// or(a, b)
+	ok, _ = build("or(a, b)").Evaluate(low)
+	assert.True(t, ok, "a true")
+	ok, _ = build("or(a, b)").Evaluate(high)
+	assert.True(t, ok, "b true")
+
+	// nested: and(a, not(b)) — true only when a holds and b does not
+	ok, _ = build("and(a, not(b))").Evaluate(low)
+	assert.True(t, ok, "a true, b false")
+	ok, _ = build("and(a, not(b))").Evaluate(mixed)
+	assert.False(t, ok, "b true → not(b) false")
+}
+
+// Purpose: Verify a 3-player party is reduced by partyAggregation before evaluation.
+// Method:  One party [10,20,60]; comparison max(players.attributes[skill]) <= 15.
+// Expect:  avg → party 30, max 30 > 15 → false; min → party 10, max 10 <= 15 → true.
+func TestComparison_ThreePlayerParty(t *testing.T) {
+	mk := func(agg string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleComparison,
+			Measurements:   []string{"max(players.attributes[skill])"},
+			ReferenceValue: json.RawMessage(`15`), Operation: "<=", PartyAggregation: agg}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	party := []core.Player{numPlayer("a", 10), numPlayer("b", 20), numPlayer("c", 60)}
+	c := &Candidate{
+		Players:     party,
+		Teams:       map[string][]core.Player{"red": party},
+		TeamOrder:   []string{"red"},
+		TeamParties: map[string][][]core.Player{"red": {party}},
+	}
+	ok, err := mk("avg").Evaluate(c)
+	require.NoError(t, err)
+	assert.False(t, ok, "avg of [10,20,60] is 30 > 15")
+	ok, _ = mk("min").Evaluate(c)
+	assert.True(t, ok, "min of [10,20,60] is 10 <= 15")
+}
+
+// Purpose: Verify that a rule whose measured attribute is absent (no value and no
+// default) passes vacuously — there are no measurements that can fail.
+// Method:  distance rule on players.attributes[skill] where players carry no skill.
+// Expect:  Evaluate returns true.
+func TestDistance_MissingAttributePasses(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleDistance,
+		Measurements:   []string{"players.attributes[skill]"},
+		ReferenceValue: json.RawMessage(`0`), MaxDistance: ptrF(5)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	noAttr := []core.Player{{ID: "p1"}, {ID: "p2"}}
+	ok, err := ev.Evaluate(&Candidate{Players: noAttr, Teams: map[string][]core.Player{"red": noAttr}})
+	require.NoError(t, err)
+	assert.True(t, ok, "no skill values means nothing can exceed maxDistance")
+}
+
+// Purpose: Verify the latency rule treats an empty player set as a pass (no player
+// can violate the threshold).
+// Method:  Evaluate a latency rule against a candidate with zero players.
+// Expect:  true.
+func TestLatency_EmptyCandidatePasses(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(50)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	ok, err := ev.Evaluate(&Candidate{})
+	require.NoError(t, err)
+	assert.True(t, ok)
 }

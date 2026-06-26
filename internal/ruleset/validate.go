@@ -157,6 +157,11 @@ func validateRule(r *Rule) error {
 		default:
 			return fmt.Errorf("comparison unknown operation %q", r.Operation)
 		}
+		// Without a referenceValue, comparison uses the "compare across players"
+		// form, which FlexMatch restricts to the = and != operations.
+		if len(r.ReferenceValue) == 0 && r.Operation != "=" && r.Operation != "!=" {
+			return fmt.Errorf("comparison operation %q requires referenceValue", r.Operation)
+		}
 		if err := validatePartyAggregation(r); err != nil {
 			return err
 		}

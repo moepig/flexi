@@ -50,12 +50,14 @@ func buildCollection(r *ruleset.Rule) (Evaluator, error) {
 func (c *collection) Name() string { return c.name }
 
 func (c *collection) Evaluate(cand *Candidate) (bool, error) {
-	if c.partyAgg != "" {
-		mode := c.partyAgg
-		cand = aggregateCandidateWith(cand, func(party []core.Player) core.Player {
-			return aggregatePartySets(party, mode)
-		})
+	// partyAggregation defaults to "union" per the FlexMatch spec.
+	mode := c.partyAgg
+	if mode == "" {
+		mode = "union"
 	}
+	cand = aggregateCandidateWith(cand, func(party []core.Player) core.Player {
+		return aggregatePartySets(party, mode)
+	})
 	ctx := cand.evalContext()
 	for _, m := range c.measures {
 		v, err := expr.Eval(m, ctx)
@@ -84,7 +86,20 @@ func (c *collection) evalOne(set []string) (bool, error) {
 	case "not_contains":
 		return !contains(set, c.refStr), nil
 	case "intersection":
-		return intersectCount(set, c.refSet) > 0, nil
+		// intersection counts the values shared with the reference set. When
+		// minCount/maxCount are set they bound the count; otherwise any overlap
+		// (count > 0) satisfies the rule.
+		n := intersectCount(set, c.refSet)
+		if c.minCount == nil && c.maxCount == nil {
+			return n > 0, nil
+		}
+		if c.minCount != nil && n < *c.minCount {
+			return false, nil
+		}
+		if c.maxCount != nil && n > *c.maxCount {
+			return false, nil
+		}
+		return true, nil
 	case "reference_intersection_count":
 		n := intersectCount(set, c.refSet)
 		if c.minCount != nil && n < *c.minCount {

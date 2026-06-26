@@ -34,9 +34,9 @@ func (l *latency) Name() string { return l.name }
 // maxDistance of the per-region reference latency). If c.Region is set the check
 // is scoped to that region.
 func (l *latency) Evaluate(c *Candidate) (bool, error) {
-	if l.partyAgg != "" {
-		c = aggregateCandidate(c, l.partyAgg)
-	}
+	// partyAggregation defaults to "avg" per the FlexMatch spec; aggregateCandidate
+	// applies that default and is a no-op when the candidate carries no parties.
+	c = aggregateCandidate(c, l.partyAgg)
 	if len(c.Players) == 0 {
 		return true, nil
 	}

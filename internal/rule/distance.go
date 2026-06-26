@@ -39,9 +39,9 @@ func buildDistance(r *ruleset.Rule) (Evaluator, error) {
 func (d *distance) Name() string { return d.name }
 
 func (d *distance) Evaluate(c *Candidate) (bool, error) {
-	if d.partyAgg != "" {
-		c = aggregateCandidate(c, d.partyAgg)
-	}
+	// partyAggregation defaults to "avg" per the FlexMatch spec; aggregateCandidate
+	// applies that default and is a no-op when the candidate carries no parties.
+	c = aggregateCandidate(c, d.partyAgg)
 	ctx := c.evalContext()
 	refV, err := expr.Eval(d.ref, ctx)
 	if err != nil {

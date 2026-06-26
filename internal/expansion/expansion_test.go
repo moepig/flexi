@@ -86,3 +86,37 @@ func TestApply_TeamField(t *testing.T) {
 	// original not mutated
 	assert.Equal(t, 3, rs.Teams[0].MinPlayers)
 }
+
+// Purpose: Verify expansions can relax the remaining rule/team fields the schema
+// allows: maxLatency, minCount, a comparison referenceValue, and team maxPlayers.
+// Method:  One rule set with four expansions, each a single 10s step; Apply at 11s.
+// Expect:  Each target field takes its expanded value; the original is unmodified.
+func TestApply_VariousFields(t *testing.T) {
+	maxLat := 100
+	minCount := 2
+	rs := &ruleset.RuleSet{
+		Teams: []ruleset.Team{{Name: "red", MinPlayers: 2, MaxPlayers: 2}},
+		Rules: []ruleset.Rule{
+			{Name: "Ping", Type: ruleset.RuleLatency, MaxLatency: &maxLat},
+			{Name: "Modes", Type: ruleset.RuleCollection, Operation: "reference_intersection_count", MinCount: &minCount},
+			{Name: "Skill", Type: ruleset.RuleComparison, ReferenceValue: json.RawMessage(`50`), Operation: "<="},
+		},
+		Expansions: []ruleset.Expansion{
+			{Target: "rules[Ping].maxLatency", Steps: []ruleset.ExpansionStep{{WaitTimeSeconds: 10, Value: json.RawMessage(`250`)}}},
+			{Target: "rules[Modes].minCount", Steps: []ruleset.ExpansionStep{{WaitTimeSeconds: 10, Value: json.RawMessage(`1`)}}},
+			{Target: "rules[Skill].referenceValue", Steps: []ruleset.ExpansionStep{{WaitTimeSeconds: 10, Value: json.RawMessage(`80`)}}},
+			{Target: "teams[red].maxPlayers", Steps: []ruleset.ExpansionStep{{WaitTimeSeconds: 10, Value: json.RawMessage(`4`)}}},
+		},
+	}
+	out, err := Apply(rs, 11*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, 250, *out.Rules[0].MaxLatency)
+	assert.Equal(t, 1, *out.Rules[1].MinCount)
+	assert.Equal(t, "80", string(out.Rules[2].ReferenceValue))
+	assert.Equal(t, 4, out.Teams[0].MaxPlayers)
+
+	// original not mutated
+	assert.Equal(t, 100, *rs.Rules[0].MaxLatency)
+	assert.Equal(t, "50", string(rs.Rules[2].ReferenceValue))
+	assert.Equal(t, 2, rs.Teams[0].MaxPlayers)
+}
