@@ -10,13 +10,13 @@ import (
 
 // RuleSet is the parsed top-level FlexMatch rule set.
 type RuleSet struct {
-	Name                string             `json:"name"`
-	RuleLanguageVersion string             `json:"ruleLanguageVersion"`
-	PlayerAttributes    []PlayerAttribute  `json:"playerAttributes,omitempty"`
-	Algorithm           Algorithm          `json:"algorithm"`
-	Teams               []Team             `json:"teams"`
-	Rules               []Rule             `json:"rules,omitempty"`
-	Expansions          []Expansion        `json:"expansions,omitempty"`
+	Name                string            `json:"name"`
+	RuleLanguageVersion string            `json:"ruleLanguageVersion"`
+	PlayerAttributes    []PlayerAttribute `json:"playerAttributes,omitempty"`
+	Algorithm           Algorithm         `json:"algorithm"`
+	Teams               []Team            `json:"teams"`
+	Rules               []Rule            `json:"rules,omitempty"`
+	Expansions          []Expansion       `json:"expansions,omitempty"`
 
 	// AcceptanceRequired, when true, holds matches formed by the engine in
 	// REQUIRES_ACCEPTANCE state until every player on every matched ticket
@@ -50,10 +50,12 @@ type PlayerAttribute struct {
 
 // Algorithm captures the rule set's algorithm block.
 type Algorithm struct {
-	Strategy           string `json:"strategy,omitempty"`
-	BatchingPreference string `json:"batchingPreference,omitempty"`
-	BalancedAttribute  string `json:"balancedAttribute,omitempty"`
-	BackfillPriority   string `json:"backfillPriority,omitempty"`
+	Strategy              string   `json:"strategy,omitempty"`
+	BatchingPreference    string   `json:"batchingPreference,omitempty"`
+	BalancedAttribute     string   `json:"balancedAttribute,omitempty"`
+	SortByAttributes      []string `json:"sortByAttributes,omitempty"`
+	BackfillPriority      string   `json:"backfillPriority,omitempty"`
+	ExpansionAgeSelection string   `json:"expansionAgeSelection,omitempty"`
 }
 
 // Team describes one team slot. Quantity > 1 means the team is created
@@ -72,6 +74,7 @@ const (
 	RuleComparison    RuleType = "comparison"
 	RuleDistance      RuleType = "distance"
 	RuleAbsoluteSort  RuleType = "absoluteSort"
+	RuleDistanceSort  RuleType = "distanceSort"
 	RuleBatchDistance RuleType = "batchDistance"
 	RuleCollection    RuleType = "collection"
 	RuleLatency       RuleType = "latency"
@@ -93,18 +96,20 @@ type Rule struct {
 	// comparison
 	Operation string `json:"operation,omitempty"`
 
-	// distance
+	// distance / batchDistance / latency
 	MaxDistance *float64 `json:"maxDistance,omitempty"`
 	MinDistance *float64 `json:"minDistance,omitempty"`
 
-	// absoluteSort
+	// absoluteSort / distanceSort
 	SortDirection string `json:"sortDirection,omitempty"`
 	SortAttribute string `json:"sortAttribute,omitempty"`
-	MapKey        string `json:"mapKey,omitempty"`
-	SortReference string `json:"sortReference,omitempty"`
+	MapKey        string `json:"mapKey,omitempty"` // minValue | maxValue for map attrs
 
 	// batchDistance
-	BatchAttribute   string `json:"batchAttribute,omitempty"`
+	BatchAttribute string `json:"batchAttribute,omitempty"`
+
+	// partyAggregation applies to most rule types: min | max | avg (default
+	// avg), or union | intersection for collection rules (default union).
 	PartyAggregation string `json:"partyAggregation,omitempty"`
 
 	// collection
@@ -112,17 +117,11 @@ type Rule struct {
 	MaxCount *int `json:"maxCount,omitempty"`
 
 	// latency
-	MaxLatency *int `json:"maxLatency,omitempty"`
+	MaxLatency        *int   `json:"maxLatency,omitempty"`
+	DistanceReference string `json:"distanceReference,omitempty"` // min | avg
 
-	// compound
-	Statement *CompoundStatement `json:"statement,omitempty"`
-}
-
-// CompoundStatement is the body of a compound rule: a condition combinator
-// applied to a list of child rule names.
-type CompoundStatement struct {
-	Condition string   `json:"condition"`
-	Rules     []string `json:"rules"`
+	// compound: a logical statement string, e.g. "or(and(A,B), not(C))".
+	Statement string `json:"statement,omitempty"`
 }
 
 // Expansion declares a time-driven loosening of a target value.

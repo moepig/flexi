@@ -50,12 +50,36 @@ func (rs *RuleSet) Validate() error {
 		return fmt.Errorf("%w: unknown algorithm.strategy %q", ErrInvalidRuleSet, rs.Algorithm.Strategy)
 	}
 	switch rs.Algorithm.BatchingPreference {
-	case "", "largestPopulation", "fastestRegion", "balanced":
+	case "", "random", "sorted", "largestPopulation", "fastestRegion":
 	default:
 		return fmt.Errorf("%w: unknown algorithm.batchingPreference %q", ErrInvalidRuleSet, rs.Algorithm.BatchingPreference)
 	}
+	// Cross-check strategy and batchingPreference compatibility.
+	switch rs.Algorithm.BatchingPreference {
+	case "random", "sorted":
+		if rs.Algorithm.Strategy == "balanced" {
+			return fmt.Errorf("%w: batchingPreference %q requires exhaustiveSearch strategy", ErrInvalidRuleSet, rs.Algorithm.BatchingPreference)
+		}
+	case "largestPopulation", "fastestRegion":
+		if rs.Algorithm.Strategy != "balanced" {
+			return fmt.Errorf("%w: batchingPreference %q requires balanced strategy", ErrInvalidRuleSet, rs.Algorithm.BatchingPreference)
+		}
+	}
+	if rs.Algorithm.BatchingPreference == "sorted" && len(rs.Algorithm.SortByAttributes) == 0 {
+		return fmt.Errorf("%w: batchingPreference \"sorted\" requires sortByAttributes", ErrInvalidRuleSet)
+	}
 	if rs.Algorithm.Strategy == "balanced" && rs.Algorithm.BalancedAttribute == "" {
 		return fmt.Errorf("%w: balanced strategy requires balancedAttribute", ErrInvalidRuleSet)
+	}
+	switch rs.Algorithm.BackfillPriority {
+	case "", "normal", "low", "high":
+	default:
+		return fmt.Errorf("%w: unknown algorithm.backfillPriority %q", ErrInvalidRuleSet, rs.Algorithm.BackfillPriority)
+	}
+	switch rs.Algorithm.ExpansionAgeSelection {
+	case "", "newest", "oldest":
+	default:
+		return fmt.Errorf("%w: unknown algorithm.expansionAgeSelection %q", ErrInvalidRuleSet, rs.Algorithm.ExpansionAgeSelection)
 	}
 
 	ruleNames := make(map[string]RuleType, len(rs.Rules))
@@ -76,17 +100,20 @@ func (rs *RuleSet) Validate() error {
 		if r.Type != RuleCompound {
 			continue
 		}
-		if r.Statement == nil {
+		if r.Statement == "" {
 			return fmt.Errorf("%w: rules[%d] compound requires statement", ErrInvalidRuleSet, i)
 		}
-		switch r.Statement.Condition {
-		case "and", "or", "not":
-		default:
-			return fmt.Errorf("%w: rule %q unknown condition %q", ErrInvalidRuleSet, r.Name, r.Statement.Condition)
+		node, err := ParseCompound(r.Statement)
+		if err != nil {
+			return fmt.Errorf("%w: rule %q invalid statement: %v", ErrInvalidRuleSet, r.Name, err)
 		}
-		for _, child := range r.Statement.Rules {
-			if _, ok := ruleNames[child]; !ok {
+		for _, child := range node.RuleNames() {
+			ct, ok := ruleNames[child]
+			if !ok {
 				return fmt.Errorf("%w: rule %q references unknown rule %q", ErrInvalidRuleSet, r.Name, child)
+			}
+			if ct == RuleBatchDistance {
+				return fmt.Errorf("%w: rule %q cannot reference batchDistance rule %q", ErrInvalidRuleSet, r.Name, child)
 			}
 		}
 	}
@@ -103,8 +130,8 @@ func (rs *RuleSet) Validate() error {
 		if exp.Target == "" {
 			return fmt.Errorf("%w: expansions[%d].target is required", ErrInvalidRuleSet, i)
 		}
-		if !strings.HasPrefix(exp.Target, "rules[") && !strings.HasPrefix(exp.Target, "algorithm.") {
-			return fmt.Errorf("%w: expansions[%d].target %q must reference rules[name].field or algorithm.field", ErrInvalidRuleSet, i, exp.Target)
+		if !strings.HasPrefix(exp.Target, "rules[") && !strings.HasPrefix(exp.Target, "teams[") && !strings.HasPrefix(exp.Target, "algorithm.") {
+			return fmt.Errorf("%w: expansions[%d].target %q must reference rules[name].field, teams[name].field, or algorithm.field", ErrInvalidRuleSet, i, exp.Target)
 		}
 		if len(exp.Steps) == 0 {
 			return fmt.Errorf("%w: expansions[%d] has no steps", ErrInvalidRuleSet, i)
@@ -130,6 +157,9 @@ func validateRule(r *Rule) error {
 		default:
 			return fmt.Errorf("comparison unknown operation %q", r.Operation)
 		}
+		if err := validatePartyAggregation(r); err != nil {
+			return err
+		}
 	case RuleDistance:
 		if len(r.Measurements) == 0 {
 			return fmt.Errorf("distance requires measurements")
@@ -137,23 +167,32 @@ func validateRule(r *Rule) error {
 		if r.MaxDistance == nil && r.MinDistance == nil {
 			return fmt.Errorf("distance requires maxDistance or minDistance")
 		}
-	case RuleAbsoluteSort:
+		if err := validatePartyAggregation(r); err != nil {
+			return err
+		}
+	case RuleAbsoluteSort, RuleDistanceSort:
 		switch r.SortDirection {
 		case "ascending", "descending":
 		default:
-			return fmt.Errorf("absoluteSort unknown sortDirection %q", r.SortDirection)
+			return fmt.Errorf("%s unknown sortDirection %q", r.Type, r.SortDirection)
 		}
 		if r.SortAttribute == "" {
-			return fmt.Errorf("absoluteSort requires sortAttribute")
+			return fmt.Errorf("%s requires sortAttribute", r.Type)
+		}
+		switch r.MapKey {
+		case "", "minValue", "maxValue":
+		default:
+			return fmt.Errorf("%s unknown mapKey %q", r.Type, r.MapKey)
+		}
+		if err := validatePartyAggregation(r); err != nil {
+			return err
 		}
 	case RuleBatchDistance:
 		if r.BatchAttribute == "" {
 			return fmt.Errorf("batchDistance requires batchAttribute")
 		}
-		switch r.PartyAggregation {
-		case "", "min", "max", "avg":
-		default:
-			return fmt.Errorf("batchDistance unknown partyAggregation %q", r.PartyAggregation)
+		if err := validatePartyAggregation(r); err != nil {
+			return err
 		}
 	case RuleCollection:
 		if len(r.Measurements) == 0 {
@@ -164,9 +203,27 @@ func validateRule(r *Rule) error {
 		default:
 			return fmt.Errorf("collection unknown operation %q", r.Operation)
 		}
+		switch r.PartyAggregation {
+		case "", "union", "intersection":
+		default:
+			return fmt.Errorf("collection unknown partyAggregation %q (want union|intersection)", r.PartyAggregation)
+		}
 	case RuleLatency:
 		if r.MaxLatency == nil {
 			return fmt.Errorf("latency requires maxLatency")
+		}
+		if r.DistanceReference != "" {
+			switch r.DistanceReference {
+			case "min", "avg":
+			default:
+				return fmt.Errorf("latency unknown distanceReference %q (want min|avg)", r.DistanceReference)
+			}
+			if r.MaxDistance == nil {
+				return fmt.Errorf("latency distanceReference requires maxDistance")
+			}
+		}
+		if err := validatePartyAggregation(r); err != nil {
+			return err
 		}
 	case RuleCompound:
 		// validated at the top level once all rule names are known
@@ -174,4 +231,14 @@ func validateRule(r *Rule) error {
 		return fmt.Errorf("unknown rule type %q", r.Type)
 	}
 	return nil
+}
+
+// validatePartyAggregation checks the min|max|avg form used by all rule types
+// except collection (which uses union|intersection).
+func validatePartyAggregation(r *Rule) error {
+	switch r.PartyAggregation {
+	case "", "min", "max", "avg":
+		return nil
+	}
+	return fmt.Errorf("%s unknown partyAggregation %q (want min|max|avg)", r.Type, r.PartyAggregation)
 }

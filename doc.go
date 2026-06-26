@@ -14,20 +14,29 @@
 //
 // Supported rule set features:
 //
-//   - Player attribute types: string, number, string_list, string_number_map.
+//   - Player attribute types: string, number, string_list, string_number_map,
+//     with default values applied to players that omit an attribute.
+//   - Property expressions in the AWS dialect, e.g.
+//     teams[red].players.attributes[skill]; aggregations min, max, avg, median,
+//     sum, count, stddev, flatten, set_intersection, with per-team nesting for
+//     multi-team scopes (teams[a,b], teams[*]).
 //   - Algorithm strategies: exhaustiveSearch, balanced (with balancedAttribute).
-//   - Algorithm batching preferences: largestPopulation, fastestRegion, balanced
-//     (parsed; influences team-fill ordering for balanced).
+//   - Algorithm batchingPreference (random, sorted, largestPopulation,
+//     fastestRegion), sortByAttributes, backfillPriority, expansionAgeSelection.
 //   - Teams with minPlayers, maxPlayers, and quantity (multi-instance teams).
-//   - All seven FlexMatch rule kinds: comparison, distance, absoluteSort,
-//     batchDistance, collection, latency, compound.
-//   - Time-driven expansions that loosen rule values once a ticket has been
-//     waiting long enough.
+//   - All eight FlexMatch rule kinds: comparison, distance, absoluteSort,
+//     distanceSort, batchDistance, collection, latency, compound (with a
+//     statement string using and/or/not/xor).
+//   - partyAggregation (min/max/avg, or union/intersection for collection) for
+//     multi-player tickets.
+//   - Time-driven expansions that loosen rule values, team sizes, or algorithm
+//     fields once a ticket has been waiting long enough.
 //   - Rule evaluation metrics (FlexMatch's ruleEvaluationMetrics): per-rule
 //     pass/fail tallies on each [Match] and [Proposal], plus cumulative
 //     per-ticket totals via [Matchmaker.RuleMetrics].
 //
-// Backfill of in-progress matches is intentionally out of scope.
+// Backfill of in-progress matches is intentionally out of scope; the
+// backfillPriority field is validated but does not change matching behaviour.
 //
 // # Quick start
 //

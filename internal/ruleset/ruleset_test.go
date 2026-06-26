@@ -35,14 +35,14 @@ const fullRS = `{
   ],
   "rules": [
     {"name": "FairSkill", "type": "distance",
-     "measurements": ["avg(teams[red].players.skill)"],
-     "referenceValue": "avg(teams[blue].players.skill)",
+     "measurements": ["avg(teams[red].players.attributes[skill])"],
+     "referenceValue": "avg(teams[blue].players.attributes[skill])",
      "maxDistance": 10},
     {"name": "Ping", "type": "latency", "maxLatency": 150},
     {"name": "ModeMatch", "type": "comparison",
-     "measurements": ["players.char"], "referenceValue": "tank", "operation": "="},
+     "measurements": ["players.attributes[char]"], "referenceValue": "tank", "operation": "="},
     {"name": "ModeIntersect", "type": "collection",
-     "measurements": ["flatten(players.modes)"],
+     "measurements": ["flatten(players.attributes[modes])"],
      "operation": "reference_intersection_count",
      "referenceValue": ["TDM", "CTF"], "minCount": 1},
     {"name": "Sort", "type": "absoluteSort",
@@ -50,7 +50,7 @@ const fullRS = `{
     {"name": "Batch", "type": "batchDistance",
      "batchAttribute": "skill", "maxDistance": 5},
     {"name": "All", "type": "compound",
-     "statement": {"condition": "and", "rules": ["FairSkill", "Ping"]}}
+     "statement": "and(FairSkill, Ping)"}
   ],
   "expansions": [
     {"target": "rules[FairSkill].maxDistance",
@@ -97,11 +97,24 @@ func TestParse_Errors(t *testing.T) {
 		"unknown rule type": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"y","type":"bogus"}]}`,
 		"compound to unknown rule": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
-		  "rules":[{"name":"y","type":"compound","statement":{"condition":"and","rules":["nope"]}}]}`,
+		  "rules":[{"name":"y","type":"compound","statement":"nope"}]}`,
 		"balanced needs attr": `{"name":"x","algorithm":{"strategy":"balanced"},
 		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
 		"expansion bad target": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "expansions":[{"target":"bogus","steps":[{"waitTimeSeconds":1,"value":1}]}]}`,
+		"invalid batchingPreference": `{"name":"x","algorithm":{"batchingPreference":"balanced"},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"sorted needs sortByAttributes": `{"name":"x","algorithm":{"strategy":"exhaustiveSearch","batchingPreference":"sorted"},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"bad expansionAgeSelection": `{"name":"x","algorithm":{"expansionAgeSelection":"middle"},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"distanceSort needs attr": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"s","type":"distanceSort","sortDirection":"ascending"}]}`,
+		"compound rejects batchDistance": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"bd","type":"batchDistance","batchAttribute":"skill","maxDistance":5},
+		           {"name":"c","type":"compound","statement":"not(bd)"}]}`,
+		"latency distanceReference needs maxDistance": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"l","type":"latency","maxLatency":100,"distanceReference":"min"}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

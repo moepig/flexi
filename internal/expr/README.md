@@ -7,33 +7,36 @@ used inside rule `measurements` and `referenceValue` strings.
 
 Turn strings like
 
-    avg(flatten(players.skill))
-    set_intersection(players.modes)
-    teams[red].players.skill
-    avg(players.items[sword])
+    avg(flatten(teams[*].players.attributes[skill]))
+    set_intersection(players.attributes[modes])
+    teams[red].players.attributes[skill]
+    avg(players.attributes[items][sword])
 
 into an AST (`Parse`) and evaluate that AST against a player roster
-(`Eval`). Rule evaluators (`internal/rule`) compose these calls when they
-need to compute a number or a set from the candidate match.
+(`Eval`). The syntax follows the AWS FlexMatch property-expression dialect.
+Rule evaluators (`internal/rule`) compose these calls when they need to
+compute a number or a set from the candidate match.
 
 ## Contents
 
 - `Parse(src string) (Node, error)` — recursive-descent parser. Recognised
   forms:
   - numeric and quoted-string literals
-  - `players.<attr>` and `players.<attr>[<key>]` (the latter for
-    `string_number_map` attributes)
-  - `teams[<name>].players.<attr>`, including `teams[*]`
+  - `players.attributes[<attr>]` and `players.attributes[<attr>][<key>]`
+    (the latter for `string_number_map` attributes)
+  - `players[playerId]` and bare `players` (player IDs, for `count`)
+  - `teams[<name>].players...`, including multiple names `teams[a,b]` and
+    `teams[*]`; multi-team scopes group results per team (nested lists)
   - one-argument function calls: `flatten`, `avg`, `min`, `max`, `sum`,
-    `count`, `set_intersection`
+    `median`, `stddev`, `count`, `set_intersection`
 - `Eval(n Node, ctx *EvalContext) (Value, error)` — evaluates a parsed
-  node. `EvalContext` supplies the unsorted player pool plus a
-  team-name → players map.
-- `Value` — tagged union returned by Eval. Notable kinds:
+  node. `EvalContext` supplies the unsorted player pool, a team-name →
+  players map, and a deterministic team order for `teams[*]`.
+- `Value` — recursive value tree returned by Eval. Kinds:
   - `KindNumber`, `KindString`
-  - `KindNumberList`, `KindStringList`
-  - `KindStringMatrix` (one string list per player, used by
-    `set_intersection`)
+  - `KindList` (a list of `Value`s, which may itself contain lists for
+    per-team nesting; numeric/string aggregations applied to a list of
+    lists operate on each sublist individually, per FlexMatch)
   - `KindNone` — produced when an aggregate (`avg`, `min`, `max`) is
     applied to an empty list. Rule evaluators interpret this as "the rule
     is not yet evaluable" and skip the comparison rather than failing it,

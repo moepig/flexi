@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/moepig/flexi/internal/core"
 	"github.com/moepig/flexi/internal/expr"
 	"github.com/moepig/flexi/internal/ruleset"
 )
@@ -16,6 +17,7 @@ type collection struct {
 	refSet   []string
 	minCount *int
 	maxCount *int
+	partyAgg string // "", "union", "intersection"
 }
 
 func buildCollection(r *ruleset.Rule) (Evaluator, error) {
@@ -26,6 +28,7 @@ func buildCollection(r *ruleset.Rule) (Evaluator, error) {
 	c := &collection{
 		name: r.Name, measures: ms, op: r.Operation,
 		minCount: r.MinCount, maxCount: r.MaxCount,
+		partyAgg: r.PartyAggregation,
 	}
 	if len(r.ReferenceValue) > 0 {
 		switch r.ReferenceValue[0] {
@@ -47,6 +50,12 @@ func buildCollection(r *ruleset.Rule) (Evaluator, error) {
 func (c *collection) Name() string { return c.name }
 
 func (c *collection) Evaluate(cand *Candidate) (bool, error) {
+	if c.partyAgg != "" {
+		mode := c.partyAgg
+		cand = aggregateCandidateWith(cand, func(party []core.Player) core.Player {
+			return aggregatePartySets(party, mode)
+		})
+	}
 	ctx := cand.evalContext()
 	for _, m := range c.measures {
 		v, err := expr.Eval(m, ctx)

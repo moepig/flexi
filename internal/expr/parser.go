@@ -9,14 +9,18 @@ import (
 
 // Parse parses a FlexMatch property expression. Recognised forms:
 //
-//	NUMBER                            (e.g. 42, 3.14)
+//	NUMBER                                  (e.g. 42, 3.14)
 //	"STRING" / 'STRING'
-//	players.<attr>
-//	players.<attr>[<key>]
-//	teams[<name>].players.<attr>
-//	teams[*].players.<attr>
-//	<func>(<expr>)                    where <func> in {flatten, avg, min, max,
-//	                                  count, sum, set_intersection}
+//	players.attributes[<attr>]
+//	players.attributes[<attr>][<key>]       (string_number_map index)
+//	players[playerId]                       (player IDs)
+//	players                                 (the players, for count(...))
+//	teams[<name>].players...                (single team)
+//	teams[<a>,<b>].players...               (multiple teams, grouped)
+//	teams[*].players...                     (all teams, grouped)
+//	<func>(<expr>)                          where <func> in {flatten, avg, min,
+//	                                        max, sum, count, median, stddev,
+//	                                        set_intersection}
 func Parse(src string) (Node, error) {
 	p := &parser{src: strings.TrimSpace(src)}
 	n, err := p.parseExpr()
@@ -101,7 +105,7 @@ func (p *parser) parseExpr() (Node, error) {
 
 	switch id {
 	case "players":
-		return p.parsePlayers("")
+		return p.parsePlayers(nil, false)
 	case "teams":
 		return p.parseTeams()
 	}
@@ -156,19 +160,52 @@ func (p *parser) parseString() (Node, error) {
 	return StringLit{V: s}, nil
 }
 
-func (p *parser) parsePlayers(scope string) (Node, error) {
+// parsePlayers parses the part after "players", given the resolved team scope.
+func (p *parser) parsePlayers(teams []string, allTeams bool) (Node, error) {
+	pa := PlayerAccess{Teams: teams, AllTeams: allTeams}
+
+	// players[playerId] -> the player IDs.
+	if p.eat('[') {
+		id := p.readIdent()
+		if id != "playerId" {
+			return nil, fmt.Errorf("expr: only [playerId] is valid after players[, got %q", id)
+		}
+		if err := p.expect(']'); err != nil {
+			return nil, err
+		}
+		return pa, nil // Attr == "" => player IDs
+	}
+
+	// Bare "players" (e.g. count(teams[red].players)).
+	p.skipSpace()
+	if p.peek() != '.' {
+		return pa, nil // Attr == "" => the players themselves
+	}
+
+	// players.attributes[<attr>]
 	if err := p.expect('.'); err != nil {
+		return nil, err
+	}
+	kw := p.readIdent()
+	if kw != "attributes" {
+		return nil, fmt.Errorf("expr: expected .attributes after players, got %q", kw)
+	}
+	if err := p.expect('['); err != nil {
 		return nil, err
 	}
 	attr := p.readIdent()
 	if attr == "" {
-		return nil, fmt.Errorf("expr: expected attribute name after players.")
+		return nil, fmt.Errorf("expr: expected attribute name in attributes[...]")
 	}
-	pa := PlayerAccess{Scope: scope, Attr: attr}
+	if err := p.expect(']'); err != nil {
+		return nil, err
+	}
+	pa.Attr = attr
+
+	// Optional map-key index: attributes[map][key]
 	if p.eat('[') {
 		key := p.readIdent()
 		if key == "" {
-			// allow string-literal index
 			if p.peek() == '"' || p.peek() == '\'' {
 				n, err := p.parseString()
 				if err != nil {
@@ -192,13 +229,20 @@ func (p *parser) parseTeams() (Node, error) {
 	if err := p.expect('['); err != nil {
 		return nil, err
 	}
-	var name string
+	var names []string
+	allTeams := false
 	if p.eat('*') {
-		name = "*"
+		allTeams = true
 	} else {
-		name = p.readIdent()
-		if name == "" {
-			return nil, fmt.Errorf("expr: expected team name")
+		for {
+			name := p.readIdent()
+			if name == "" {
+				return nil, fmt.Errorf("expr: expected team name")
+			}
+			names = append(names, name)
+			if !p.eat(',') {
+				break
+			}
 		}
 	}
 	if err := p.expect(']'); err != nil {
@@ -211,5 +255,5 @@ func (p *parser) parseTeams() (Node, error) {
 	if id != "players" {
 		return nil, fmt.Errorf("expr: expected .players after teams[..]")
 	}
-	return p.parsePlayers(name)
+	return p.parsePlayers(names, allTeams)
 }

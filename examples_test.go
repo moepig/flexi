@@ -20,8 +20,8 @@ const skillRS = `{
   ],
   "rules": [
     {"name": "FairSkill", "type": "distance",
-     "measurements": ["avg(teams[red].players.skill)"],
-     "referenceValue": "avg(teams[blue].players.skill)",
+     "measurements": ["avg(teams[red].players.attributes[skill])"],
+     "referenceValue": "avg(teams[blue].players.attributes[skill])",
      "maxDistance": 10}
   ]
 }`
@@ -207,4 +207,71 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// Purpose: Verify that a playerAttributes default is applied to players that omit
+// the attribute, so rules referencing it still evaluate.
+// Method:  skill defaults to 50; a batchDistance(maxDistance=5) over four tickets
+//
+//	where two omit skill entirely (defaulted to 50).
+//
+// Expect:  A match forms because every player's effective skill is within 5.
+func TestEndToEnd_PlayerAttributeDefault(t *testing.T) {
+	body := `{
+	  "name": "defaults",
+	  "playerAttributes": [{"name": "skill", "type": "number", "default": 50}],
+	  "teams": [{"name": "all", "minPlayers": 4, "maxPlayers": 4}],
+	  "rules": [{"name": "Tight", "type": "batchDistance",
+	    "batchAttribute": "skill", "maxDistance": 5}]
+	}`
+	mm, err := flexi.New([]byte(body))
+	require.NoError(t, err)
+
+	noAttr := func(id string) flexi.Ticket {
+		return flexi.Ticket{ID: id, Players: []flexi.Player{{ID: id}}}
+	}
+	require.NoError(t, mm.Enqueue(solo("a", 48)))
+	require.NoError(t, mm.Enqueue(solo("b", 52)))
+	require.NoError(t, mm.Enqueue(noAttr("c"))) // skill defaults to 50
+	require.NoError(t, mm.Enqueue(noAttr("d"))) // skill defaults to 50
+
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	assert.Len(t, matches[0].Teams["all"], 4)
+}
+
+// Purpose: Verify expansionAgeSelection="oldest" measures expansion wait time
+// from the oldest queued ticket rather than the newest.
+// Method:  Enqueue ticket "a", advance 31s, enqueue "b" (skill gap > initial
+//
+//	limit), then Tick. The expansion step is 30s.
+//
+// Expect:  With "oldest", a's 31s wait triggers the expansion and a match forms
+//
+//	on the first Tick after b joins.
+func TestEndToEnd_ExpansionAgeSelectionOldest(t *testing.T) {
+	body := `{
+	  "name": "expand-oldest",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "algorithm": {"expansionAgeSelection": "oldest"},
+	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
+	  "rules": [{"name": "Tight", "type": "batchDistance",
+	    "batchAttribute": "skill", "maxDistance": 5}],
+	  "expansions": [{"target": "rules[Tight].maxDistance",
+	    "steps": [{"waitTimeSeconds": 30, "value": 100}]}]
+	}`
+	clock := flexi.NewFakeClock(time.Unix(1_700_000_000, 0))
+	mm, err := flexi.New([]byte(body), flexi.WithClock(clock))
+	require.NoError(t, err)
+
+	require.NoError(t, mm.Enqueue(solo("a", 10)))
+	clock.Advance(31 * time.Second)
+	require.NoError(t, mm.Enqueue(solo("b", 80)))
+
+	// Oldest ticket "a" has waited 31s (> 30s step), so the expansion applies
+	// even though "b" just joined.
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
 }

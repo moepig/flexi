@@ -127,6 +127,65 @@ func TestBuild_BalancedStrategy(t *testing.T) {
 	assert.InDelta(t, red, blue, 25, "red=%v blue=%v", red, blue)
 }
 
+func ids(tickets []core.Ticket) []string {
+	out := make([]string, len(tickets))
+	for i, t := range tickets {
+		out[i] = t.ID
+	}
+	return out
+}
+
+// Purpose: Verify an absoluteSort rule orders tickets[1:] by attribute while
+// keeping the oldest ticket as the anchor.
+// Method:  Anchor "a" plus three tickets with descending skill; sort ascending.
+// Expect:  Anchor stays first; the rest follow in ascending skill order.
+func TestOrderBatch_AbsoluteSort(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+	  "rules": [{"name": "S", "type": "absoluteSort",
+	    "sortDirection": "ascending", "sortAttribute": "skill"}]
+	}`)
+	tickets := []core.Ticket{solo("a", 50), solo("b", 90), solo("c", 10), solo("d", 30)}
+	out := orderBatch(rs, tickets)
+	assert.Equal(t, []string{"a", "c", "d", "b"}, ids(out))
+}
+
+// Purpose: Verify a distanceSort rule orders tickets[1:] by absolute distance
+// from the anchor's attribute value.
+// Method:  Anchor "a" skill=50; others at 40/90/55; sort ascending by distance.
+// Expect:  Closest-to-50 first: 55(d=5), 40(d=10), 90(d=40).
+func TestOrderBatch_DistanceSort(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+	  "rules": [{"name": "S", "type": "distanceSort",
+	    "sortDirection": "ascending", "sortAttribute": "skill"}]
+	}`)
+	tickets := []core.Ticket{solo("a", 50), solo("b", 40), solo("c", 90), solo("d", 55)}
+	out := orderBatch(rs, tickets)
+	assert.Equal(t, []string{"a", "d", "b", "c"}, ids(out))
+}
+
+// Purpose: Verify batchingPreference "sorted" pre-sorts the whole pool by
+// sortByAttributes (ascending), including the first ticket.
+// Method:  Four tickets with unsorted skills; strategy exhaustiveSearch.
+// Expect:  Tickets ordered by ascending skill.
+func TestOrderBatch_SortByAttributes(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "algorithm": {"strategy": "exhaustiveSearch", "batchingPreference": "sorted",
+	    "sortByAttributes": ["skill"]},
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}]
+	}`)
+	tickets := []core.Ticket{solo("a", 50), solo("b", 90), solo("c", 10), solo("d", 30)}
+	out := orderBatch(rs, tickets)
+	assert.Equal(t, []string{"c", "d", "a", "b"}, ids(out))
+}
+
 func sumSkill(ps []core.Player) float64 {
 	var s float64
 	for _, p := range ps {

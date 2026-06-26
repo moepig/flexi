@@ -24,10 +24,14 @@ its own file so the implementations stay small and obvious.
   - `batch_distance.go`
   - `collection.go`
   - `latency.go`
-  - `compound.go`
-  - `absoluteSort` is built by `Build` directly as an "always pass"
-    evaluator — it affects ordering, which is the algorithm's concern, not
-    admission.
+  - `compound.go` (parses the `statement` string via
+    `ruleset.ParseCompound` and evaluates `and`/`or`/`not`/`xor`)
+  - `party.go` (collapses multi-player tickets per `partyAggregation`
+    before evaluation: numeric min/max/avg, or union/intersection for
+    collection rules)
+  - `absoluteSort` and `distanceSort` are built by `Build` as "always pass"
+    evaluators — they affect ordering, which is the algorithm's concern
+    (see `internal/algorithm/sort.go`), not admission.
 
 ## Design notes
 

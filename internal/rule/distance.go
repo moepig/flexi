@@ -14,6 +14,7 @@ type distance struct {
 	ref         expr.Node
 	maxDistance *float64
 	minDistance *float64
+	partyAgg    string
 }
 
 func buildDistance(r *ruleset.Rule) (Evaluator, error) {
@@ -31,12 +32,16 @@ func buildDistance(r *ruleset.Rule) (Evaluator, error) {
 	return &distance{
 		name: r.Name, measures: ms, ref: ref.Node,
 		maxDistance: r.MaxDistance, minDistance: r.MinDistance,
+		partyAgg: r.PartyAggregation,
 	}, nil
 }
 
 func (d *distance) Name() string { return d.name }
 
 func (d *distance) Evaluate(c *Candidate) (bool, error) {
+	if d.partyAgg != "" {
+		c = aggregateCandidate(c, d.partyAgg)
+	}
 	ctx := c.evalContext()
 	refV, err := expr.Eval(d.ref, ctx)
 	if err != nil {

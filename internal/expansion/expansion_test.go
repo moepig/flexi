@@ -63,3 +63,26 @@ func TestApply_AlgorithmField(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "fastestRegion", out.Algorithm.BatchingPreference)
 }
+
+// Purpose: Verify that a teams[<names>].<field> expansion relaxes team size for
+// every named team and leaves the original unmutated.
+// Method:  Two teams minPlayers=3; target "teams[red, blue].minPlayers" step 10s→2.
+// Expect:  Both teams' minPlayers become 2 at 10s; original stays 3.
+func TestApply_TeamField(t *testing.T) {
+	rs := &ruleset.RuleSet{
+		Teams: []ruleset.Team{
+			{Name: "red", MinPlayers: 3, MaxPlayers: 5},
+			{Name: "blue", MinPlayers: 3, MaxPlayers: 5},
+		},
+		Expansions: []ruleset.Expansion{{
+			Target: "teams[red, blue].minPlayers",
+			Steps:  []ruleset.ExpansionStep{{WaitTimeSeconds: 10, Value: json.RawMessage(`2`)}},
+		}},
+	}
+	out, err := Apply(rs, 11*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, 2, out.Teams[0].MinPlayers)
+	assert.Equal(t, 2, out.Teams[1].MinPlayers)
+	// original not mutated
+	assert.Equal(t, 3, rs.Teams[0].MinPlayers)
+}

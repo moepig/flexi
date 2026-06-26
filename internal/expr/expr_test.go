@@ -35,13 +35,14 @@ func TestParseAndEval_Numbers(t *testing.T) {
 	ctx := &EvalContext{Players: players(10, 20, 30)}
 
 	cases := map[string]float64{
-		"avg(players.skill)":          20,
-		"sum(players.skill)":          60,
-		"min(players.skill)":          10,
-		"max(players.skill)":          30,
-		"count(players.skill)":        3,
-		"avg(flatten(players.skill))": 20,
-		"42":                          42,
+		"avg(players.attributes[skill])":          20,
+		"sum(players.attributes[skill])":          60,
+		"min(players.attributes[skill])":          10,
+		"max(players.attributes[skill])":          30,
+		"median(players.attributes[skill])":       20,
+		"count(players.attributes[skill])":        3,
+		"avg(flatten(players.attributes[skill]))": 20,
+		"42": 42,
 	}
 	for src, want := range cases {
 		t.Run(src, func(t *testing.T) {
@@ -66,18 +67,49 @@ func TestParseAndEval_TeamScope(t *testing.T) {
 			"blue": players(40, 60),
 		},
 	}
-	n, err := Parse("avg(teams[red].players.skill)")
+	n, err := Parse("avg(teams[red].players.attributes[skill])")
 	require.NoError(t, err)
 	v, err := Eval(n, ctx)
 	require.NoError(t, err)
 	got, _ := v.AsNumber()
 	assert.Equal(t, 15.0, got)
 
-	n, err = Parse("avg(teams[blue].players.skill)")
+	n, err = Parse("avg(teams[blue].players.attributes[skill])")
 	require.NoError(t, err)
 	v, err = Eval(n, ctx)
 	require.NoError(t, err)
 	got, _ = v.AsNumber()
+	assert.Equal(t, 50.0, got)
+}
+
+// Purpose: Verify per-team (nested) aggregation semantics for teams[*].
+// Method:  red=[10,20], blue=[40,60] in deterministic order; evaluate
+//
+//	avg(teams[*].players.attributes[skill]) and max(avg(...)).
+//
+// Expect:  avg(...) is the per-team list [15,50]; max(avg(...)) is the scalar 50.
+func TestParseAndEval_NestedAggregation(t *testing.T) {
+	ctx := &EvalContext{
+		TeamPlayers: map[string][]core.Player{
+			"red":  players(10, 20),
+			"blue": players(40, 60),
+		},
+		TeamOrder: []string{"red", "blue"},
+	}
+	n, err := Parse("avg(teams[*].players.attributes[skill])")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	nums, ok := v.FlattenNumbers()
+	require.True(t, ok)
+	assert.Equal(t, []float64{15, 50}, nums)
+
+	n, err = Parse("max(avg(teams[*].players.attributes[skill]))")
+	require.NoError(t, err)
+	v, err = Eval(n, ctx)
+	require.NoError(t, err)
+	got, ok := v.AsNumber()
+	require.True(t, ok)
 	assert.Equal(t, 50.0, got)
 }
 
@@ -92,13 +124,14 @@ func TestSetIntersection(t *testing.T) {
 			{Attributes: core.Attributes{"modes": sl("CTF", "TDM")}},
 		},
 	}
-	n, err := Parse("set_intersection(players.modes)")
+	n, err := Parse("set_intersection(players.attributes[modes])")
 	require.NoError(t, err)
 	v, err := Eval(n, ctx)
 	require.NoError(t, err)
-	require.Equal(t, KindStringList, v.Kind)
-	sort.Strings(v.SL)
-	assert.Equal(t, []string{"CTF"}, v.SL)
+	strs, ok := v.FlattenStrings()
+	require.True(t, ok)
+	sort.Strings(strs)
+	assert.Equal(t, []string{"CTF"}, strs)
 }
 
 // Purpose: Verify that players.<attr>[<key>] correctly extracts values from a string_number_map attribute.
@@ -111,7 +144,7 @@ func TestStringNumberMap(t *testing.T) {
 			{Attributes: core.Attributes{"items": sdm(map[string]float64{"sword": 10})}},
 		},
 	}
-	n, err := Parse("avg(players.items[sword])")
+	n, err := Parse("avg(players.attributes[items][sword])")
 	require.NoError(t, err)
 	v, err := Eval(n, ctx)
 	require.NoError(t, err)
@@ -120,15 +153,18 @@ func TestStringNumberMap(t *testing.T) {
 }
 
 // Purpose: Verify that representative malformed expressions are rejected by Parse.
-// Method:  Run sub-tests for: empty string, bare "players", incomplete dotted references, unsupported syntax, unclosed call.
+// Method:  Run sub-tests for: empty string, attribute access missing attributes[...],
+//
+//	team scope missing .players, unsupported syntax, unclosed call.
+//
 // Expect:  Every case returns a non-nil error.
 func TestParseErrors(t *testing.T) {
 	bad := []string{
 		"",
-		"players",
 		"players.",
-		"teams[red]",
-		"teams[red].players",
+		"players.skill",      // missing attributes[...]
+		"teams[red]",         // missing .players
+		"players.attributes", // missing [attr]
 		"foo bar",
 		"avg(",
 	}

@@ -1,6 +1,7 @@
 package flexi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -60,6 +61,9 @@ type Matchmaker struct {
 	rs    *ruleset.RuleSet
 	q     *queue.Queue
 	clock Clock
+	// defaults holds parsed playerAttributes defaults, applied to players that
+	// omit a declared attribute when they are enqueued.
+	defaults map[string]core.Attribute
 
 	mu        sync.Mutex
 	statuses  map[string]TicketStatus
@@ -111,10 +115,15 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 	for _, o := range opts {
 		o(&cfg)
 	}
+	defaults, err := parseDefaults(rs)
+	if err != nil {
+		return nil, err
+	}
 	return &Matchmaker{
 		rs:               rs,
 		q:                queue.New(),
 		clock:            cfg.clock,
+		defaults:         defaults,
 		statuses:         make(map[string]TicketStatus),
 		ticketToProposal: make(map[string]*proposal),
 		ruleMetrics:      make(map[string][]core.RuleMetric),
@@ -139,6 +148,7 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 	if len(t.Players) == 0 {
 		return errors.New("flexi: ticket must have at least one player")
 	}
+	t = m.applyDefaults(t)
 	t.EnqueuedAt = m.clock.Now()
 
 	m.mu.Lock()
@@ -153,6 +163,74 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 	m.statuses[t.ID] = StatusQueued
 	m.mu.Unlock()
 	return nil
+}
+
+// parseDefaults reads the rule set's playerAttributes defaults into Attribute
+// values keyed by attribute name. Attributes without a default are skipped.
+func parseDefaults(rs *ruleset.RuleSet) (map[string]core.Attribute, error) {
+	out := make(map[string]core.Attribute)
+	for _, pa := range rs.PlayerAttributes {
+		if len(pa.Default) == 0 {
+			continue
+		}
+		var a core.Attribute
+		switch pa.Type {
+		case "string":
+			a.Kind = core.AttrString
+			if err := json.Unmarshal(pa.Default, &a.S); err != nil {
+				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
+			}
+		case "number":
+			a.Kind = core.AttrNumber
+			if err := json.Unmarshal(pa.Default, &a.N); err != nil {
+				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
+			}
+		case "string_list":
+			a.Kind = core.AttrStringList
+			if err := json.Unmarshal(pa.Default, &a.SL); err != nil {
+				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
+			}
+		case "string_number_map":
+			a.Kind = core.AttrStringNumberMap
+			if err := json.Unmarshal(pa.Default, &a.SDM); err != nil {
+				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
+			}
+		default:
+			continue
+		}
+		out[pa.Name] = a
+	}
+	return out, nil
+}
+
+// applyDefaults returns a copy of t in which any player missing a declared
+// attribute that has a default value has that default filled in.
+func (m *Matchmaker) applyDefaults(t Ticket) Ticket {
+	if len(m.defaults) == 0 {
+		return t
+	}
+	players := make([]core.Player, len(t.Players))
+	for i, p := range t.Players {
+		players[i] = p
+		var attrs core.Attributes
+		for name, def := range m.defaults {
+			if _, ok := p.Attributes[name]; ok {
+				continue
+			}
+			if attrs == nil {
+				attrs = make(core.Attributes, len(p.Attributes)+1)
+				for k, v := range p.Attributes {
+					attrs[k] = v
+				}
+			}
+			attrs[name] = def
+		}
+		if attrs != nil {
+			players[i].Attributes = attrs
+		}
+	}
+	t.Players = players
+	return t
 }
 
 // Cancel removes the ticket with the given ID from the matchmaker and marks
@@ -399,13 +477,25 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 		return matches, nil
 	}
 
+	// Expansion wait time is measured against either the oldest or the newest
+	// queued ticket, per algorithm.expansionAgeSelection. AWS defaults to
+	// "newest" (the clock restarts whenever a newer ticket joins, so expansions
+	// trigger more slowly); "oldest" triggers more quickly.
 	oldest := tickets[0].EnqueuedAt
+	newest := tickets[0].EnqueuedAt
 	for _, t := range tickets[1:] {
 		if t.EnqueuedAt.Before(oldest) {
 			oldest = t.EnqueuedAt
 		}
+		if t.EnqueuedAt.After(newest) {
+			newest = t.EnqueuedAt
+		}
 	}
-	elapsed := now.Sub(oldest)
+	ref := newest
+	if m.rs.Algorithm.ExpansionAgeSelection == "oldest" {
+		ref = oldest
+	}
+	elapsed := now.Sub(ref)
 
 	rs, err := expansion.Apply(m.rs, elapsed)
 	if err != nil {

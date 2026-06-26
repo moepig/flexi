@@ -8,10 +8,11 @@ import (
 )
 
 type comparison struct {
-	name      string
-	measures  []expr.Node
-	ref       parsedRef
-	op        string
+	name     string
+	measures []expr.Node
+	ref      parsedRef
+	op       string
+	partyAgg string
 }
 
 func buildComparison(r *ruleset.Rule) (Evaluator, error) {
@@ -26,12 +27,15 @@ func buildComparison(r *ruleset.Rule) (Evaluator, error) {
 	if ref.Node == nil {
 		return nil, fmt.Errorf("comparison %q: referenceValue required", r.Name)
 	}
-	return &comparison{name: r.Name, measures: ms, ref: ref, op: r.Operation}, nil
+	return &comparison{name: r.Name, measures: ms, ref: ref, op: r.Operation, partyAgg: r.PartyAggregation}, nil
 }
 
 func (c *comparison) Name() string { return c.name }
 
 func (c *comparison) Evaluate(cand *Candidate) (bool, error) {
+	if c.partyAgg != "" {
+		cand = aggregateCandidate(cand, c.partyAgg)
+	}
 	ctx := cand.evalContext()
 	refV, err := expr.Eval(c.ref.Node, ctx)
 	if err != nil {

@@ -184,13 +184,16 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 
 	// When the balanced strategy is active, sort tickets by the balanced
 	// attribute descending so the greedy "place into lowest-sum team" loop
-	// produces an even split.
+	// produces an even split. Otherwise apply batchingPreference pre-sorting and
+	// any absoluteSort/distanceSort rules to order the batch.
 	if balancedAttr != "" && len(tickets) > 1 {
 		ordered := append([]core.Ticket(nil), tickets...)
 		sort.SliceStable(ordered, func(i, j int) bool {
 			return partyAttrSum(ordered[i], balancedAttr) > partyAttrSum(ordered[j], balancedAttr)
 		})
 		tickets = ordered
+	} else if len(tickets) > 1 {
+		tickets = orderBatch(rs, tickets)
 	}
 
 	used := map[string]struct{}{}
@@ -321,15 +324,30 @@ func rulesPassAndRecord(evals []rule.Evaluator, slots []teamSlot, mc *metricsCol
 func buildCandidate(slots []teamSlot, region string) *rule.Candidate {
 	all := []core.Player{}
 	teams := map[string][]core.Player{}
+	teamParties := map[string][][]core.Player{}
+	order := make([]string, 0, len(slots))
 	var parties [][]core.Player
 	for _, s := range slots {
 		all = append(all, s.Players...)
-		teams[s.Name] = append([]core.Player(nil), s.Players...)
-		// also expose under base name for teams[<base>] expressions
-		teams[s.BaseName] = append(teams[s.BaseName], s.Players...)
+		teams[s.Name] = append(teams[s.Name], s.Players...)
+		teamParties[s.Name] = append(teamParties[s.Name], s.Parties...)
+		// also expose under base name for teams[<base>] expressions (only when
+		// quantity expansion produced a distinct slot name, to avoid doubling).
+		if s.BaseName != s.Name {
+			teams[s.BaseName] = append(teams[s.BaseName], s.Players...)
+			teamParties[s.BaseName] = append(teamParties[s.BaseName], s.Parties...)
+		}
+		order = append(order, s.Name)
 		parties = append(parties, s.Parties...)
 	}
-	return &rule.Candidate{Players: all, Teams: teams, Parties: parties, Region: region}
+	return &rule.Candidate{
+		Players:     all,
+		Teams:       teams,
+		TeamOrder:   order,
+		Parties:     parties,
+		TeamParties: teamParties,
+		Region:      region,
+	}
 }
 
 // teamOrder returns slot indices in the order the algorithm should try when

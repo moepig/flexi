@@ -29,6 +29,10 @@ For a single match (`formOne`):
 2. If `algorithm.strategy == "balanced"`, pre-sort the ticket list by the
    `balancedAttribute` descending; this gives the greedy "place into the
    team with the lowest current attribute sum" loop a much better split.
+   Otherwise, order the batch (`orderBatch`, see `sort.go`): apply
+   `batchingPreference: "sorted"` with `sortByAttributes`, then any
+   `absoluteSort` / `distanceSort` rules (keeping the oldest ticket as the
+   anchor the match is built around).
 3. For each ticket, compute a team ordering (`teamOrder`) and try to
    place the whole party on the first slot where:
    - capacity is not exceeded (`canAdd`), and

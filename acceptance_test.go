@@ -21,8 +21,8 @@ const acceptRS = `{
   ],
   "rules": [
     {"name": "FairSkill", "type": "distance",
-     "measurements": ["avg(teams[red].players.skill)"],
-     "referenceValue": "avg(teams[blue].players.skill)",
+     "measurements": ["avg(teams[red].players.attributes[skill])"],
+     "referenceValue": "avg(teams[blue].players.attributes[skill])",
      "maxDistance": 10}
   ],
   "acceptanceRequired": true,
@@ -41,8 +41,8 @@ const acceptReqTimeoutRS = `{
   ],
   "rules": [
     {"name": "FairSkill", "type": "distance",
-     "measurements": ["avg(teams[red].players.skill)"],
-     "referenceValue": "avg(teams[blue].players.skill)",
+     "measurements": ["avg(teams[red].players.attributes[skill])"],
+     "referenceValue": "avg(teams[blue].players.attributes[skill])",
      "maxDistance": 10}
   ],
   "acceptanceRequired": true,
@@ -805,8 +805,8 @@ func TestAcceptance_ZeroTimeoutMeansNoTimeout(t *testing.T) {
       ],
       "rules": [
         {"name": "FairSkill", "type": "distance",
-         "measurements": ["avg(teams[red].players.skill)"],
-         "referenceValue": "avg(teams[blue].players.skill)",
+         "measurements": ["avg(teams[red].players.attributes[skill])"],
+         "referenceValue": "avg(teams[blue].players.attributes[skill])",
          "maxDistance": 10}
       ],
       "acceptanceRequired": true

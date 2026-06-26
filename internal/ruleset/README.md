@@ -16,13 +16,16 @@ consume the structures defined here.
 ## Contents
 
 - `RuleSet`, `Team`, `PlayerAttribute`, `Algorithm`, `Rule`,
-  `CompoundStatement`, `Expansion`, `ExpansionStep` — the parsed structures
-  that mirror the FlexMatch JSON schema. `RuleSet` also carries the
-  top-level `AcceptanceRequired` / `AcceptanceTimeoutSeconds` fields that
-  drive the player-acceptance flow, and `RequestTimeoutSeconds` which bounds
-  a ticket's overall time in matchmaking, in the public package.
+  `Expansion`, `ExpansionStep` — the parsed structures that mirror the
+  FlexMatch JSON schema. `RuleSet` also carries the top-level
+  `AcceptanceRequired` / `AcceptanceTimeoutSeconds` fields that drive the
+  player-acceptance flow, and `RequestTimeoutSeconds` which bounds a
+  ticket's overall time in matchmaking, in the public package.
 - `RuleType` and its constants (`RuleComparison`, `RuleDistance`, …,
-  `RuleCompound`) for switching on rule kind.
+  `RuleDistanceSort`, `RuleCompound`) for switching on rule kind.
+- `CompoundNode` and `ParseCompound(s string)` — parser for a compound
+  rule's `statement` string (e.g. `"or(and(A,B), not(C))"`) into a tree of
+  `and`/`or`/`not`/`xor` operators and leaf rule references.
 - `Parse(body []byte) (*RuleSet, error)` — entry point. Returns errors that
   wrap `ErrInvalidRuleSet`.
 - `(*RuleSet).Validate()` — the semantic checks Parse runs after JSON

@@ -18,12 +18,18 @@ import (
 type Candidate struct {
 	Players []core.Player
 	Teams   map[string][]core.Player
-	Parties [][]core.Player
-	Region  string
+	// TeamOrder lists the actual team (slot) names in deterministic order, used
+	// to expand teams[*] expressions.
+	TeamOrder []string
+	Parties   [][]core.Player
+	// TeamParties groups each team's parties (one sub-slice per ticket) by team
+	// name, used to apply partyAggregation per team.
+	TeamParties map[string][][]core.Player
+	Region      string
 }
 
 func (c *Candidate) evalContext() *expr.EvalContext {
-	return &expr.EvalContext{Players: c.Players, TeamPlayers: c.Teams}
+	return &expr.EvalContext{Players: c.Players, TeamPlayers: c.Teams, TeamOrder: c.TeamOrder}
 }
 
 // Evaluator answers whether a Candidate passes the rule. Errors are surfaced
@@ -41,7 +47,9 @@ func Build(r *ruleset.Rule, compounds map[string]Evaluator) (Evaluator, error) {
 		return buildComparison(r)
 	case ruleset.RuleDistance:
 		return buildDistance(r)
-	case ruleset.RuleAbsoluteSort:
+	case ruleset.RuleAbsoluteSort, ruleset.RuleDistanceSort:
+		// Sort rules order the ticket batch (handled in the algorithm package);
+		// they do not admit or reject candidates.
 		return alwaysPass{name: r.Name}, nil
 	case ruleset.RuleBatchDistance:
 		return buildBatchDistance(r)
@@ -56,11 +64,11 @@ func Build(r *ruleset.Rule, compounds map[string]Evaluator) (Evaluator, error) {
 }
 
 // alwaysPass is used for rule kinds that affect ordering but not admission
-// (currently absoluteSort).
+// (absoluteSort and distanceSort).
 type alwaysPass struct{ name string }
 
-func (a alwaysPass) Name() string                          { return a.name }
-func (alwaysPass) Evaluate(*Candidate) (bool, error)       { return true, nil }
+func (a alwaysPass) Name() string                    { return a.name }
+func (alwaysPass) Evaluate(*Candidate) (bool, error) { return true, nil }
 
 // parseRefAsExpr turns the rule's referenceValue (json.RawMessage) into a
 // parsed expression. Strings that fail to parse as expressions are returned

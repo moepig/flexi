@@ -8,11 +8,14 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 
 ## Features
 
-- **AWS-compatible JSON**: feed the same rule set documented in the FlexMatch developer guide.
-- **All seven rule kinds**: `comparison`, `distance`, `absoluteSort`, `batchDistance`, `collection`, `latency`, `compound`.
-- **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`.
-- **Algorithm strategies**: `exhaustiveSearch` and `balanced` (with `balancedAttribute`).
-- **Expansions**: rule values loosen automatically as tickets wait.
+- **AWS-compatible JSON**: feed the same rule set documented in the FlexMatch developer guide, including the AWS property-expression dialect (`teams[red].players.attributes[skill]`).
+- **All eight rule kinds**: `comparison`, `distance`, `absoluteSort`, `distanceSort`, `batchDistance`, `collection`, `latency`, `compound`.
+- **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`, with `default` values applied to players that omit an attribute.
+- **Property-expression aggregations**: `min`, `max`, `avg`, `median`, `sum`, `count`, `stddev`, `flatten`, `set_intersection`, with per-team nesting (`avg(teams[*].players.attributes[skill])` → one result per team).
+- **partyAggregation**: `min` / `max` / `avg` (and `union` / `intersection` for collection) on multi-player tickets.
+- **Compound statements**: AWS string form with `and` / `or` / `not` / `xor`, e.g. `"or(and(A,B), not(C))"`.
+- **Algorithm block**: `exhaustiveSearch` and `balanced` strategies, `batchingPreference` (`random` / `sorted` / `largestPopulation` / `fastestRegion`), `sortByAttributes`, `backfillPriority`, `expansionAgeSelection`.
+- **Expansions**: rule values, team sizes (`teams[Red,Blue].minPlayers`), and algorithm fields loosen automatically as tickets wait.
 - **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `SEARCHING` / `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` / `requestTimeoutSeconds` on the rule set. On a failed acceptance (reject or acceptance timeout) the tickets that did accept return to `SEARCHING` for re-matching while the rest are `CANCELLED`; `TIMED_OUT` is reserved for the request-level `requestTimeoutSeconds`, mirroring AWS.
 - **Injectable clock**: tests advance time deterministically, no `time.Sleep`.
 - **Zero external dependencies at runtime** (testify is test-only). No network or persistence.
@@ -50,8 +53,8 @@ const ruleset = `{
     {
       "name": "FairSkill",
       "type": "distance",
-      "measurements": ["avg(teams[red].players.skill)"],
-      "referenceValue": "avg(teams[blue].players.skill)",
+      "measurements": ["avg(teams[red].players.attributes[skill])"],
+      "referenceValue": "avg(teams[blue].players.attributes[skill])",
       "maxDistance": 10
     }
   ]
@@ -139,14 +142,14 @@ matches, _ = mm.Tick()            // expansion steps with waitTimeSeconds<=60 ap
     {
       "name": "FairSkill",
       "type": "distance",
-      "measurements": ["avg(teams[team_1].players.skill)"],
-      "referenceValue": "avg(teams[team_2].players.skill)",
+      "measurements": ["avg(teams[team_1].players.attributes[skill])"],
+      "referenceValue": "avg(teams[team_2].players.attributes[skill])",
       "maxDistance": 10
     },
     {
       "name": "ModeOverlap",
       "type": "collection",
-      "measurements": ["set_intersection(players.modes)"],
+      "measurements": ["set_intersection(players.attributes[modes])"],
       "operation": "reference_intersection_count",
       "referenceValue": ["TDM", "CTF", "FFA"],
       "minCount": 1
@@ -155,7 +158,7 @@ matches, _ = mm.Tick()            // expansion steps with waitTimeSeconds<=60 ap
     {
       "name": "All",
       "type": "compound",
-      "statement": {"condition": "and", "rules": ["FairSkill", "ModeOverlap", "Ping"]}
+      "statement": "and(FairSkill, ModeOverlap, Ping)"
     }
   ],
   "expansions": [

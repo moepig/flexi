@@ -40,24 +40,84 @@ func pickStep(steps []ruleset.ExpansionStep, secs int) *ruleset.ExpansionStep {
 }
 
 func applyTarget(rs *ruleset.RuleSet, target string, value json.RawMessage) error {
-	switch {
-	case strings.HasPrefix(target, "rules["):
-		end := strings.Index(target, "]")
-		if end < 0 || !strings.HasPrefix(target[end:], "].") {
-			return fmt.Errorf("expansion: invalid target %q", target)
-		}
-		name := target[len("rules[") : end]
-		field := target[end+2:]
-		for i := range rs.Rules {
-			if rs.Rules[i].Name == name {
-				return setRuleField(&rs.Rules[i], field, value)
-			}
-		}
-		return fmt.Errorf("expansion: unknown rule %q in target %q", name, target)
-	case strings.HasPrefix(target, "algorithm."):
+	if strings.HasPrefix(target, "algorithm.") {
 		return setAlgorithmField(&rs.Algorithm, target[len("algorithm."):], value)
 	}
+
+	open := strings.Index(target, "[")
+	closeIdx := strings.Index(target, "]")
+	if open < 0 || closeIdx < open || !strings.HasPrefix(target[closeIdx:], "].") {
+		return fmt.Errorf("expansion: invalid target %q", target)
+	}
+	comp := target[:open]
+	names := splitNames(target[open+1 : closeIdx])
+	field := target[closeIdx+2:]
+	if len(names) == 0 {
+		return fmt.Errorf("expansion: target %q names no elements", target)
+	}
+
+	switch comp {
+	case "rules":
+		for _, name := range names {
+			found := false
+			for i := range rs.Rules {
+				if rs.Rules[i].Name == name {
+					if err := setRuleField(&rs.Rules[i], field, value); err != nil {
+						return err
+					}
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("expansion: unknown rule %q in target %q", name, target)
+			}
+		}
+		return nil
+	case "teams":
+		for _, name := range names {
+			found := false
+			for i := range rs.Teams {
+				if rs.Teams[i].Name == name {
+					if err := setTeamField(&rs.Teams[i], field, value); err != nil {
+						return err
+					}
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("expansion: unknown team %q in target %q", name, target)
+			}
+		}
+		return nil
+	}
 	return fmt.Errorf("expansion: unsupported target %q", target)
+}
+
+func splitNames(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func setTeamField(t *ruleset.Team, field string, value json.RawMessage) error {
+	var i int
+	if err := json.Unmarshal(value, &i); err != nil {
+		return fmt.Errorf("expansion: team field %q requires an integer: %v", field, err)
+	}
+	switch field {
+	case "minPlayers":
+		t.MinPlayers = i
+	case "maxPlayers":
+		t.MaxPlayers = i
+	default:
+		return fmt.Errorf("expansion: unsupported team field %q", field)
+	}
+	return nil
 }
 
 func setRuleField(r *ruleset.Rule, field string, value json.RawMessage) error {
@@ -93,6 +153,8 @@ func setAlgorithmField(a *ruleset.Algorithm, field string, value json.RawMessage
 		a.BalancedAttribute = s
 	case "backfillPriority":
 		a.BackfillPriority = s
+	case "expansionAgeSelection":
+		a.ExpansionAgeSelection = s
 	default:
 		return fmt.Errorf("expansion: unsupported algorithm field %q", field)
 	}
@@ -150,11 +212,6 @@ func cloneRule(r ruleset.Rule) ruleset.Rule {
 	if r.MaxCount != nil {
 		v := *r.MaxCount
 		out.MaxCount = &v
-	}
-	if r.Statement != nil {
-		s := *r.Statement
-		s.Rules = append([]string(nil), r.Statement.Rules...)
-		out.Statement = &s
 	}
 	if r.ReferenceValue != nil {
 		out.ReferenceValue = append(json.RawMessage(nil), r.ReferenceValue...)

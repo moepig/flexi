@@ -28,15 +28,15 @@ func numCand(skills ...float64) *Candidate {
 }
 
 func ptrF(v float64) *float64 { return &v }
-func ptrI(v int) *int          { return &v }
+func ptrI(v int) *int         { return &v }
 
-// Purpose: Verify that the comparison rule (avg(players.skill) <= 50) correctly passes and rejects candidates.
+// Purpose: Verify that the comparison rule (avg(players.attributes[skill]) <= 50) correctly passes and rejects candidates.
 // Method:  Evaluate the same evaluator against a player set with avg=30 and another with avg=75.
 // Expect:  avg=30 → true; avg=75 → false.
 func TestComparison(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleComparison,
-		Measurements:   []string{"avg(players.skill)"},
+		Measurements:   []string{"avg(players.attributes[skill])"},
 		ReferenceValue: json.RawMessage(`50`),
 		Operation:      "<=",
 	}
@@ -55,8 +55,8 @@ func TestComparison(t *testing.T) {
 func TestDistance(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleDistance,
-		Measurements:   []string{"avg(teams[red].players.skill)"},
-		ReferenceValue: json.RawMessage(`"avg(teams[blue].players.skill)"`),
+		Measurements:   []string{"avg(teams[red].players.attributes[skill])"},
+		ReferenceValue: json.RawMessage(`"avg(teams[blue].players.attributes[skill])"`),
 		MaxDistance:    ptrF(10),
 	}
 	ev, err := Build(r, nil)
@@ -140,13 +140,13 @@ func TestBatchDistance_PartyAggregation(t *testing.T) {
 	assert.False(t, ok, "max spread 20 should exceed maxDistance 15")
 }
 
-// Purpose: Verify that the collection/contains operation detects a target value in flatten(players.modes).
+// Purpose: Verify that the collection/contains operation detects a target value in flatten(players.attributes[modes]).
 // Method:  Evaluate against one player with modes=["TDM","CTF"] using reference value "TDM".
 // Expect:  true is returned.
 func TestCollection_Contains(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleCollection,
-		Measurements:   []string{"flatten(players.modes)"},
+		Measurements:   []string{"flatten(players.attributes[modes])"},
 		Operation:      "contains",
 		ReferenceValue: json.RawMessage(`"TDM"`),
 	}
@@ -165,7 +165,7 @@ func TestCollection_Contains(t *testing.T) {
 func TestCollection_RefIntersection(t *testing.T) {
 	r := &ruleset.Rule{
 		Name: "x", Type: ruleset.RuleCollection,
-		Measurements:   []string{"set_intersection(players.modes)"},
+		Measurements:   []string{"set_intersection(players.attributes[modes])"},
 		Operation:      "reference_intersection_count",
 		ReferenceValue: json.RawMessage(`["TDM","CTF"]`),
 		MinCount:       ptrI(1),
@@ -207,11 +207,11 @@ func TestLatency(t *testing.T) {
 // Expect:  Both children satisfied → true; one child fails → false.
 func TestCompound(t *testing.T) {
 	r1 := &ruleset.Rule{Name: "a", Type: ruleset.RuleComparison,
-		Measurements: []string{"avg(players.skill)"}, ReferenceValue: json.RawMessage(`50`), Operation: "<="}
-	r2 := &ruleset.Rule{Name: "b", Type: ruleset.RuleBatchDistance,
-		BatchAttribute: "skill", MaxDistance: ptrF(20)}
+		Measurements: []string{"avg(players.attributes[skill])"}, ReferenceValue: json.RawMessage(`50`), Operation: "<="}
+	r2 := &ruleset.Rule{Name: "b", Type: ruleset.RuleComparison,
+		Measurements: []string{"max(players.attributes[skill])"}, ReferenceValue: json.RawMessage(`80`), Operation: "<="}
 	rc := &ruleset.Rule{Name: "c", Type: ruleset.RuleCompound,
-		Statement: &ruleset.CompoundStatement{Condition: "and", Rules: []string{"a", "b"}}}
+		Statement: "and(a, b)"}
 
 	others := map[string]Evaluator{}
 	for _, r := range []*ruleset.Rule{r1, r2} {
@@ -226,4 +226,129 @@ func TestCompound(t *testing.T) {
 	assert.True(t, ok)
 	ok, _ = cev.Evaluate(numCand(10, 50, 90))
 	assert.False(t, ok)
+}
+
+// Purpose: Verify xor passes only when exactly one child rule is satisfied.
+// Method:  xor(a, b) where a=avg<=50 and b=max>=80; evaluate three player sets.
+// Expect:  exactly-one-true → true; both-true and both-false → false.
+func TestCompound_Xor(t *testing.T) {
+	a := &ruleset.Rule{Name: "a", Type: ruleset.RuleComparison,
+		Measurements: []string{"avg(players.attributes[skill])"}, ReferenceValue: json.RawMessage(`50`), Operation: "<="}
+	b := &ruleset.Rule{Name: "b", Type: ruleset.RuleComparison,
+		Measurements: []string{"max(players.attributes[skill])"}, ReferenceValue: json.RawMessage(`80`), Operation: ">="}
+	rc := &ruleset.Rule{Name: "c", Type: ruleset.RuleCompound, Statement: "xor(a, b)"}
+
+	others := map[string]Evaluator{}
+	for _, r := range []*ruleset.Rule{a, b} {
+		ev, err := Build(r, others)
+		require.NoError(t, err)
+		others[r.Name] = ev
+	}
+	cev, err := Build(rc, others)
+	require.NoError(t, err)
+
+	// avg=20<=50 true, max=30>=80 false -> exactly one -> true
+	ok, _ := cev.Evaluate(numCand(10, 20, 30))
+	assert.True(t, ok)
+	// avg=90<=50 false, max=90>=80 true -> exactly one -> true
+	ok, _ = cev.Evaluate(numCand(90, 90))
+	assert.True(t, ok)
+	// avg=40<=50 true, max=90>=80 true -> both -> false
+	ok, _ = cev.Evaluate(numCand(10, 70, 90, 10))
+	assert.False(t, ok)
+}
+
+// Purpose: Verify the latency distanceReference/maxDistance constraint.
+// Method:  maxLatency=200, distanceReference=min, maxDistance=30. Two players in
+//
+//	us-east-1 with latencies 50 and 70 (spread 20) then 50 and 90 (40).
+//
+// Expect:  spread within 30 → true; spread beyond 30 → false.
+func TestLatency_DistanceReference(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency,
+		MaxLatency: ptrI(200), DistanceReference: "min", MaxDistance: ptrF(30)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	good := []core.Player{
+		{Latencies: map[string]int{"us-east-1": 50}},
+		{Latencies: map[string]int{"us-east-1": 70}},
+	}
+	ok, err := ev.Evaluate(&Candidate{Players: good})
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	bad := []core.Player{
+		{Latencies: map[string]int{"us-east-1": 50}},
+		{Latencies: map[string]int{"us-east-1": 90}},
+	}
+	ok, _ = ev.Evaluate(&Candidate{Players: bad})
+	assert.False(t, ok)
+}
+
+// Purpose: Verify comparison partyAggregation collapses each party before comparing.
+// Method:  comparison max(players.attributes[skill]) <= 30 with partyAggregation=avg.
+//
+//	One party [20,40] (avg=30) and one solo [25]; aggregated max is 30.
+//
+// Expect:  true with avg aggregation (party becomes 30); false without (raw 40 > 30).
+func TestComparison_PartyAggregation(t *testing.T) {
+	mk := func(agg string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleComparison,
+			Measurements:   []string{"max(players.attributes[skill])"},
+			ReferenceValue: json.RawMessage(`30`), Operation: "<=", PartyAggregation: agg}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	party := []core.Player{numPlayer("a", 20), numPlayer("b", 40)}
+	solo := []core.Player{numPlayer("c", 25)}
+	all := append(append([]core.Player{}, party...), solo...)
+	c := &Candidate{
+		Players:     all,
+		Teams:       map[string][]core.Player{"red": all},
+		TeamOrder:   []string{"red"},
+		TeamParties: map[string][][]core.Player{"red": {party, solo}},
+	}
+	ok, err := mk("avg").Evaluate(c)
+	require.NoError(t, err)
+	assert.True(t, ok, "avg-aggregated party max is 30")
+
+	ok, _ = mk("").Evaluate(c)
+	assert.False(t, ok, "without aggregation raw max is 40")
+}
+
+// Purpose: Verify collection partyAggregation=intersection narrows a party to its
+// shared modes before the collection operation.
+// Method:  contains "CTF" over a party whose members are [TDM,CTF] and [TDM]; with
+//
+//	intersection the party's modes become [TDM] only.
+//
+// Expect:  union (default) → contains CTF true; intersection → false.
+func TestCollection_PartyIntersection(t *testing.T) {
+	mk := func(agg string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleCollection,
+			Measurements: []string{"flatten(players.attributes[modes])"},
+			Operation:    "contains", ReferenceValue: json.RawMessage(`"CTF"`),
+			PartyAggregation: agg}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	party := []core.Player{
+		{ID: "a", Attributes: core.Attributes{"modes": sl("TDM", "CTF")}},
+		{ID: "b", Attributes: core.Attributes{"modes": sl("TDM")}},
+	}
+	c := &Candidate{
+		Players:     party,
+		Teams:       map[string][]core.Player{"red": party},
+		TeamOrder:   []string{"red"},
+		TeamParties: map[string][][]core.Player{"red": {party}},
+	}
+	ok, err := mk("union").Evaluate(c)
+	require.NoError(t, err)
+	assert.True(t, ok, "union keeps CTF")
+
+	ok, _ = mk("intersection").Evaluate(c)
+	assert.False(t, ok, "intersection drops CTF (only TDM shared)")
 }

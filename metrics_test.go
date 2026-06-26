@@ -36,9 +36,9 @@ const failFirstRS = `{
   "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
   "rules": [
     {"name": "Fail", "type": "comparison",
-     "measurements": ["avg(players.skill)"], "referenceValue": 10, "operation": "<="},
+     "measurements": ["avg(players.attributes[skill])"], "referenceValue": 10, "operation": "<="},
     {"name": "Pass", "type": "comparison",
-     "measurements": ["avg(players.skill)"], "referenceValue": 0, "operation": ">="}
+     "measurements": ["avg(players.attributes[skill])"], "referenceValue": 0, "operation": ">="}
   ]
 }`
 
@@ -167,11 +167,11 @@ func TestMetrics_CompoundReportsTopLevelOnly(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [
 	    {"name": "RuleA", "type": "comparison",
-	     "measurements": ["avg(players.skill)"], "referenceValue": 0, "operation": ">="},
+	     "measurements": ["avg(players.attributes[skill])"], "referenceValue": 0, "operation": ">="},
 	    {"name": "RuleB", "type": "comparison",
-	     "measurements": ["avg(players.skill)"], "referenceValue": 1000, "operation": "<="},
+	     "measurements": ["avg(players.attributes[skill])"], "referenceValue": 1000, "operation": "<="},
 	    {"name": "Both", "type": "compound",
-	     "statement": {"condition": "and", "rules": ["RuleA", "RuleB"]}}
+	     "statement": "and(RuleA, RuleB)"}
 	  ]
 	}`
 	mm, err := flexi.New([]byte(body))
