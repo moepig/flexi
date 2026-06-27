@@ -12,10 +12,15 @@
 // no GameLift hosting integration, no networking, and no persistence. The
 // ticket queue is held in memory only.
 //
+// The rule set must declare ruleLanguageVersion "1.0" (the only version AWS
+// FlexMatch supports); a missing or different value is rejected.
+//
 // Supported rule set features:
 //
 //   - Player attribute types: string, number, string_list, string_number_map,
-//     with default values applied to players that omit an attribute.
+//     with default values applied to players that omit an attribute. A value
+//     whose kind disagrees with the declared type is rejected at [Matchmaker.Enqueue];
+//     attributes not declared in the rule set are carried through unchecked.
 //   - Property expressions in the AWS dialect, e.g.
 //     teams[red].players.attributes[skill]; aggregations min, max, avg, median,
 //     sum, count, stddev, flatten, set_intersection, with per-team nesting for
@@ -29,6 +34,20 @@
 //     statement string using and/or/not/xor).
 //   - partyAggregation (min/max/avg, or union/intersection for collection) for
 //     multi-player tickets.
+//
+// A few rule types follow the AWS semantics precisely enough to be worth
+// spelling out:
+//
+//   - collection: "contains" counts how many times the reference value occurs in
+//     the measurement (bounded by minCount/maxCount); "intersection" counts the
+//     values shared by every player's collection and takes no referenceValue;
+//     "reference_intersection_count" requires each player's collection to
+//     intersect the reference value within minCount/maxCount.
+//   - batchDistance: a numeric attribute is grouped by spread (maxDistance /
+//     minDistance); a string attribute is grouped by value equivalency, and with
+//     no distance bound it requires every player to share one value.
+//   - maxDistance / minDistance accept either a JSON number or a string-encoded
+//     number (e.g. "500"), matching the inconsistent AWS documentation.
 //   - Time-driven expansions that loosen rule values, team sizes, or algorithm
 //     fields once a ticket has been waiting long enough.
 //   - Rule evaluation metrics (FlexMatch's ruleEvaluationMetrics): per-rule

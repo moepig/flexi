@@ -7,6 +7,16 @@ import (
 
 // Validate performs semantic checks beyond JSON well-formedness.
 func (rs *RuleSet) Validate() error {
+	// ruleLanguageVersion is required and the only supported value is "1.0"
+	// (FlexMatch rule set property definitions).
+	switch rs.RuleLanguageVersion {
+	case "1.0":
+	case "":
+		return fmt.Errorf("%w: ruleLanguageVersion is required", ErrInvalidRuleSet)
+	default:
+		return fmt.Errorf("%w: unsupported ruleLanguageVersion %q (want \"1.0\")", ErrInvalidRuleSet, rs.RuleLanguageVersion)
+	}
+
 	if len(rs.Teams) == 0 {
 		return fmt.Errorf("%w: at least one team is required", ErrInvalidRuleSet)
 	}
@@ -204,7 +214,14 @@ func validateRule(r *Rule) error {
 			return fmt.Errorf("collection requires measurements")
 		}
 		switch r.Operation {
-		case "contains", "not_contains", "intersection", "reference_intersection_count":
+		case "contains", "not_contains", "reference_intersection_count":
+			// These operations compare the measurement against a reference value.
+			if len(r.ReferenceValue) == 0 {
+				return fmt.Errorf("collection operation %q requires referenceValue", r.Operation)
+			}
+		case "intersection":
+			// intersection counts values shared across players and takes no
+			// referenceValue (see FlexMatch "SharedMode" example).
 		default:
 			return fmt.Errorf("collection unknown operation %q", r.Operation)
 		}

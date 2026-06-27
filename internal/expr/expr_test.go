@@ -261,6 +261,113 @@ func TestStringNumberMap_MissingKey(t *testing.T) {
 	assert.Equal(t, KindNone, v.Kind)
 }
 
+// Purpose: Verify the data-type contracts of the aggregation functions: numeric
+// aggregations require numbers, and set_intersection requires string lists.
+// Method:  apply avg/sum/min/max/median/stddev to a string attribute, and
+//
+//	set_intersection to a numeric attribute.
+//
+// Expect:  every type-mismatched evaluation returns an error.
+func TestAggregation_TypeMismatchErrors(t *testing.T) {
+	strPlayers := []core.Player{
+		{Attributes: core.Attributes{"char": {Kind: core.AttrString, S: "mage"}}},
+		{Attributes: core.Attributes{"char": {Kind: core.AttrString, S: "rogue"}}},
+	}
+	ctx := &EvalContext{Players: strPlayers}
+	for _, fn := range []string{"avg", "sum", "min", "max", "median", "stddev"} {
+		t.Run(fn+" on strings", func(t *testing.T) {
+			n, err := Parse(fn + "(players.attributes[char])")
+			require.NoError(t, err)
+			_, err = Eval(n, ctx)
+			assert.Error(t, err, "%s should reject string values", fn)
+		})
+	}
+
+	numCtx := &EvalContext{Players: players(10, 20)}
+	n, err := Parse("set_intersection(players.attributes[skill])")
+	require.NoError(t, err)
+	_, err = Eval(n, numCtx)
+	assert.Error(t, err, "set_intersection should reject numeric values")
+}
+
+// Purpose: Verify flatten and count operate on string_list values. flatten
+// merges one nesting level; count is type-agnostic and, over a nested list,
+// produces a per-sublist count (List<?> handled per the nested-aggregation rule).
+// Method:  two players with modes lists [TDM,CTF] and [FFA]; flatten one level,
+//
+//	count over the per-player lists, and count(players) for the roster size.
+//
+// Expect:  flatten yields the concatenated strings; count yields per-player
+//
+//	element counts [2,1]; count(players) yields the scalar 2.
+func TestFlattenAndCount_Strings(t *testing.T) {
+	ctx := &EvalContext{Players: []core.Player{
+		{Attributes: core.Attributes{"modes": sl("TDM", "CTF")}},
+		{Attributes: core.Attributes{"modes": sl("FFA")}},
+	}}
+
+	n, err := Parse("flatten(players.attributes[modes])")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	strs, ok := v.FlattenStrings()
+	require.True(t, ok)
+	sort.Strings(strs)
+	assert.Equal(t, []string{"CTF", "FFA", "TDM"}, strs)
+
+	n, err = Parse("count(players.attributes[modes])")
+	require.NoError(t, err)
+	v, err = Eval(n, ctx)
+	require.NoError(t, err)
+	counts, ok := v.FlattenNumbers()
+	require.True(t, ok)
+	assert.Equal(t, []float64{2, 1}, counts, "per-player mode counts")
+
+	n, err = Parse("count(players)")
+	require.NoError(t, err)
+	v, err = Eval(n, ctx)
+	require.NoError(t, err)
+	got, ok := v.AsNumber()
+	require.True(t, ok)
+	assert.Equal(t, 2.0, got, "roster size")
+}
+
+// Purpose: Verify the teams[a,b] property-expression form (a set of specific
+// named teams) resolves to a per-team grouping (List<List<number>>) and that
+// aggregations map over each team sublist.
+// Method:  red=[10,20], blue=[40,60]; evaluate teams[red,blue].players.attributes[skill]
+//
+//	and avg(teams[red,blue].players.attributes[skill]).
+//
+// Expect:  the raw form is [[10,20],[40,60]]; the avg form is the per-team [15,50].
+func TestParseAndEval_MultipleNamedTeams(t *testing.T) {
+	ctx := &EvalContext{
+		TeamPlayers: map[string][]core.Player{
+			"red":  players(10, 20),
+			"blue": players(40, 60),
+		},
+		TeamOrder: []string{"red", "blue"},
+	}
+	n, err := Parse("teams[red,blue].players.attributes[skill]")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	require.Equal(t, KindList, v.Kind)
+	require.Len(t, v.List, 2)
+	red, _ := v.List[0].FlattenNumbers()
+	blue, _ := v.List[1].FlattenNumbers()
+	assert.Equal(t, []float64{10, 20}, red)
+	assert.Equal(t, []float64{40, 60}, blue)
+
+	n, err = Parse("avg(teams[red,blue].players.attributes[skill])")
+	require.NoError(t, err)
+	v, err = Eval(n, ctx)
+	require.NoError(t, err)
+	nums, ok := v.FlattenNumbers()
+	require.True(t, ok)
+	assert.Equal(t, []float64{15, 50}, nums)
+}
+
 // Purpose: Verify that representative malformed expressions are rejected by Parse.
 // Method:  Run sub-tests for: empty string, attribute access missing attributes[...],
 //

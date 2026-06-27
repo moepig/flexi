@@ -89,11 +89,62 @@ func TestParse_Full(t *testing.T) {
 // Method:  Parse a rule set whose comparison rule omits referenceValue and uses !=.
 // Expect:  No error.
 func TestParse_ComparisonAcrossPlayers(t *testing.T) {
-	body := `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+	body := `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 	  "rules":[{"name":"diff","type":"comparison","measurements":["players.attributes[char]"],"operation":"!="}]}`
 	rs, err := Parse([]byte(body))
 	require.NoError(t, err)
 	require.Len(t, rs.Rules, 1)
+}
+
+// Purpose: Verify that maxDistance/minDistance accept string-encoded numbers, as
+// shown in the FlexMatch rule-type examples (e.g. "maxDistance":"500"), in
+// addition to the JSON-number form in the schema page.
+// Method:  Parse a batchDistance rule whose maxDistance is the string "500".
+// Expect:  No error; MaxDistance resolves to the float64 500.
+func TestParse_StringEncodedMaxDistance(t *testing.T) {
+	body := `{"name":"x","ruleLanguageVersion":"1.0",
+	  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+	  "rules":[{"name":"SimilarSkill","type":"batchDistance",
+	    "batchAttribute":"SkillRating","maxDistance":"500"}]}`
+	rs, err := Parse([]byte(body))
+	require.NoError(t, err)
+	require.Len(t, rs.Rules, 1)
+	require.NotNil(t, rs.Rules[0].MaxDistance)
+	assert.Equal(t, 500.0, *rs.Rules[0].MaxDistance)
+
+	// A non-numeric string is still rejected.
+	bad := `{"name":"x","ruleLanguageVersion":"1.0",
+	  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+	  "rules":[{"name":"Bad","type":"batchDistance",
+	    "batchAttribute":"SkillRating","maxDistance":"lots"}]}`
+	_, err = Parse([]byte(bad))
+	assert.Error(t, err)
+}
+
+// Purpose: Verify the compound statement parser enforces operator arity: not is
+// unary, and/or/xor take two or more arguments, and only and/or/not/xor are
+// recognised operators.
+// Method:  Parse representative well-formed and malformed statements.
+// Expect:  well-formed parse cleanly; malformed return an error.
+func TestParseCompound_Arity(t *testing.T) {
+	for _, s := range []string{"and(a,b)", "or(a,b,c)", "not(a)", "xor(a,b)", "and(a, not(b), c)"} {
+		if _, err := ParseCompound(s); err != nil {
+			t.Errorf("ParseCompound(%q) unexpected error: %v", s, err)
+		}
+	}
+	bad := map[string]string{
+		"not with two args": "not(a,b)",
+		"and with one arg":  "and(a)",
+		"or with one arg":   "or(a)",
+		"unknown operator":  "nand(a,b)",
+		"unterminated":      "and(a,b",
+	}
+	for name, s := range bad {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseCompound(s)
+			assert.Error(t, err)
+		})
+	}
 }
 
 // Purpose: Verify that representative invalid inputs are rejected by Parse with ErrInvalidRuleSet.
@@ -104,31 +155,35 @@ func TestParse_ComparisonAcrossPlayers(t *testing.T) {
 // Expect:  Every case returns an error wrapping ErrInvalidRuleSet.
 func TestParse_Errors(t *testing.T) {
 	cases := map[string]string{
-		"no teams": `{"name":"x"}`,
-		"bad json": `not json`,
-		"unknown rule type": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"no teams":                        `{"name":"x","ruleLanguageVersion":"1.0"}`,
+		"bad json":                        `not json`,
+		"missing ruleLanguageVersion":     `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"unsupported ruleLanguageVersion": `{"name":"x","ruleLanguageVersion":"2.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"unknown rule type": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"y","type":"bogus"}]}`,
-		"compound to unknown rule": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"compound to unknown rule": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"y","type":"compound","statement":"nope"}]}`,
-		"balanced needs attr": `{"name":"x","algorithm":{"strategy":"balanced"},
+		"balanced needs attr": `{"name":"x","ruleLanguageVersion":"1.0","algorithm":{"strategy":"balanced"},
 		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
-		"expansion bad target": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"expansion bad target": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "expansions":[{"target":"bogus","steps":[{"waitTimeSeconds":1,"value":1}]}]}`,
-		"invalid batchingPreference": `{"name":"x","algorithm":{"batchingPreference":"balanced"},
+		"invalid batchingPreference": `{"name":"x","ruleLanguageVersion":"1.0","algorithm":{"batchingPreference":"balanced"},
 		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
-		"sorted needs sortByAttributes": `{"name":"x","algorithm":{"strategy":"exhaustiveSearch","batchingPreference":"sorted"},
+		"sorted needs sortByAttributes": `{"name":"x","ruleLanguageVersion":"1.0","algorithm":{"strategy":"exhaustiveSearch","batchingPreference":"sorted"},
 		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
-		"bad expansionAgeSelection": `{"name":"x","algorithm":{"expansionAgeSelection":"middle"},
+		"bad expansionAgeSelection": `{"name":"x","ruleLanguageVersion":"1.0","algorithm":{"expansionAgeSelection":"middle"},
 		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
-		"distanceSort needs attr": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"distanceSort needs attr": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"s","type":"distanceSort","sortDirection":"ascending"}]}`,
-		"compound rejects batchDistance": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"compound rejects batchDistance": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"bd","type":"batchDistance","batchAttribute":"skill","maxDistance":5},
 		           {"name":"c","type":"compound","statement":"not(bd)"}]}`,
-		"latency distanceReference needs maxDistance": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"latency distanceReference needs maxDistance": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"l","type":"latency","maxLatency":100,"distanceReference":"min"}]}`,
-		"comparison without referenceValue needs = or !=": `{"name":"x","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		"comparison without referenceValue needs = or !=": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"c","type":"comparison","measurements":["players.attributes[skill]"],"operation":"<="}]}`,
+		"collection contains needs referenceValue": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"c","type":"collection","measurements":["players.attributes[modes]"],"operation":"contains"}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

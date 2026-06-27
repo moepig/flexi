@@ -518,36 +518,134 @@ func TestLatency_PartyAggregation(t *testing.T) {
 	assert.False(t, ok, "max → 120 > 100")
 }
 
-// Purpose: Verify the collection intersection operation, including minCount/maxCount
-// bounds (A-4) and the unbounded overlap form.
-// Method:  measurement set [TDM,CTF,FFA] against reference [TDM,CTF] (overlap 2).
-// Expect:  unbounded → true; minCount 2 → true; minCount 3 → false; maxCount 1 → false.
+// Purpose: Verify the collection "intersection" operation per the FlexMatch spec:
+// it counts the values shared by EVERY player's collection and takes no
+// referenceValue (the "SharedMode" example). minCount/maxCount bound that count;
+// with no bounds a non-empty intersection is required.
+// Method:  per-player mode lists [TDM,CTF,FFA], [TDM,CTF], [CTF] → common = {CTF}.
+// Expect:  unbounded → true; minCount 1 → true; minCount 2 → false; maxCount 0 → false.
 func TestCollection_Intersection(t *testing.T) {
 	mk := func(min, max *int) Evaluator {
 		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleCollection,
-			Measurements:   []string{"flatten(players.attributes[modes])"},
-			Operation:      "intersection",
-			ReferenceValue: json.RawMessage(`["TDM","CTF"]`),
+			Measurements: []string{"players.attributes[modes]"},
+			Operation:    "intersection",
+			MinCount:     min, MaxCount: max}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	pl := []core.Player{
+		{Attributes: core.Attributes{"modes": sl("TDM", "CTF", "FFA")}},
+		{Attributes: core.Attributes{"modes": sl("TDM", "CTF")}},
+		{Attributes: core.Attributes{"modes": sl("CTF")}},
+	}
+	c := &Candidate{Players: pl}
+
+	ok, err := mk(nil, nil).Evaluate(c)
+	require.NoError(t, err)
+	assert.True(t, ok, "common {CTF} (count 1) > 0 satisfies unbounded intersection")
+
+	ok, _ = mk(ptrI(1), nil).Evaluate(c)
+	assert.True(t, ok, "common count 1 >= minCount 1")
+
+	ok, _ = mk(ptrI(2), nil).Evaluate(c)
+	assert.False(t, ok, "common count 1 < minCount 2")
+
+	ok, _ = mk(nil, ptrI(0)).Evaluate(c)
+	assert.False(t, ok, "common count 1 > maxCount 0")
+
+	// No value shared by all players → empty intersection → unbounded fails.
+	disjoint := &Candidate{Players: []core.Player{
+		{Attributes: core.Attributes{"modes": sl("TDM")}},
+		{Attributes: core.Attributes{"modes": sl("CTF")}},
+	}}
+	ok, _ = mk(nil, nil).Evaluate(disjoint)
+	assert.False(t, ok, "no common mode → empty intersection")
+	ok, _ = mk(ptrI(1), nil).Evaluate(disjoint)
+	assert.False(t, ok, "no common mode → count 0 < minCount 1")
+}
+
+// Purpose: Verify the collection "contains" operation counts OCCURRENCES of the
+// reference value across the flattened measurement and bounds them with
+// minCount/maxCount (the FlexMatch "OverallMedicLimit: no more than 5 medics"
+// example), rather than returning a mere boolean.
+// Method:  flatten each player's character list; count "medic"; maxCount 1.
+// Expect:  two medics → false; one medic → true; zero medics → true (0 <= 1).
+func TestCollection_ContainsCount(t *testing.T) {
+	mk := func(min, max *int) Evaluator {
+		r := &ruleset.Rule{Name: "MedicLimit", Type: ruleset.RuleCollection,
+			Measurements:   []string{"flatten(players.attributes[character])"},
+			Operation:      "contains",
+			ReferenceValue: json.RawMessage(`"medic"`),
 			MinCount:       min, MaxCount: max}
 		ev, err := Build(r, nil)
 		require.NoError(t, err)
 		return ev
 	}
-	pl := []core.Player{{Attributes: core.Attributes{"modes": sl("TDM", "CTF", "FFA")}}}
-	c := &Candidate{Players: pl}
+	two := &Candidate{Players: []core.Player{
+		{Attributes: core.Attributes{"character": sl("medic")}},
+		{Attributes: core.Attributes{"character": sl("medic")}},
+		{Attributes: core.Attributes{"character": sl("knight")}},
+	}}
+	one := &Candidate{Players: []core.Player{
+		{Attributes: core.Attributes{"character": sl("medic")}},
+		{Attributes: core.Attributes{"character": sl("knight")}},
+	}}
+	zero := &Candidate{Players: []core.Player{
+		{Attributes: core.Attributes{"character": sl("rogue")}},
+		{Attributes: core.Attributes{"character": sl("knight")}},
+	}}
 
-	ok, err := mk(nil, nil).Evaluate(c)
+	ok, err := mk(nil, ptrI(1)).Evaluate(two)
 	require.NoError(t, err)
-	assert.True(t, ok, "overlap 2 > 0 satisfies unbounded intersection")
+	assert.False(t, ok, "2 medics > maxCount 1")
+	ok, _ = mk(nil, ptrI(1)).Evaluate(one)
+	assert.True(t, ok, "1 medic <= maxCount 1")
+	ok, _ = mk(nil, ptrI(1)).Evaluate(zero)
+	assert.True(t, ok, "0 medics <= maxCount 1")
+	// minCount enforces a lower bound on occurrences.
+	ok, _ = mk(ptrI(1), nil).Evaluate(zero)
+	assert.False(t, ok, "0 medics < minCount 1")
+}
 
-	ok, _ = mk(ptrI(2), nil).Evaluate(c)
-	assert.True(t, ok, "overlap 2 >= minCount 2")
+// Purpose: Verify reference_intersection_count evaluates EACH player's collection
+// against the reference value independently (the FlexMatch "preferred opponents"
+// example): every player's string list must intersect the reference within
+// minCount/maxCount, and the referenceValue may be a property expression.
+// Method:  measurement = each player's myCharacter; reference =
+//
+//	set_intersection of all players' preferredOpponents; minCount 1.
+//
+// Expect:  every chosen character on the common opponents list → true; one
+//
+//	player's character off the list → false.
+func TestCollection_ReferenceIntersectionPerPlayer(t *testing.T) {
+	mk := func() Evaluator {
+		r := &ruleset.Rule{Name: "OpponentMatch", Type: ruleset.RuleCollection,
+			Measurements:   []string{"players.attributes[myCharacter]"},
+			Operation:      "reference_intersection_count",
+			ReferenceValue: json.RawMessage(`"set_intersection(players.attributes[preferredOpponents])"`),
+			MinCount:       ptrI(1)}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	// common preferredOpponents = {mage, knight}.
+	pass := &Candidate{Players: []core.Player{
+		{Attributes: core.Attributes{"myCharacter": sl("knight"), "preferredOpponents": sl("mage", "knight", "rogue")}},
+		{Attributes: core.Attributes{"myCharacter": sl("mage"), "preferredOpponents": sl("mage", "knight")}},
+	}}
+	ok, err := mk().Evaluate(pass)
+	require.NoError(t, err)
+	assert.True(t, ok, "every chosen character is on the common opponents list")
 
-	ok, _ = mk(ptrI(3), nil).Evaluate(c)
-	assert.False(t, ok, "overlap 2 < minCount 3")
-
-	ok, _ = mk(nil, ptrI(1)).Evaluate(c)
-	assert.False(t, ok, "overlap 2 > maxCount 1")
+	// player 2 picks rogue, which is not in the common opponents {mage, knight}.
+	fail := &Candidate{Players: []core.Player{
+		{Attributes: core.Attributes{"myCharacter": sl("knight"), "preferredOpponents": sl("mage", "knight", "rogue")}},
+		{Attributes: core.Attributes{"myCharacter": sl("rogue"), "preferredOpponents": sl("mage", "knight")}},
+	}}
+	ok, _ = mk().Evaluate(fail)
+	assert.False(t, ok, "a chosen character off the common opponents list fails")
 }
 
 // Purpose: Verify the collection not_contains operation (a flexi extension; not part
@@ -790,4 +888,114 @@ func TestLatency_EmptyCandidatePasses(t *testing.T) {
 	ok, err := ev.Evaluate(&Candidate{})
 	require.NoError(t, err)
 	assert.True(t, ok)
+}
+
+// strAttrCand builds a single-team candidate whose players each carry a string
+// attribute of the given name.
+func strAttrCand(attr string, vals ...string) *Candidate {
+	pl := make([]core.Player, len(vals))
+	for i, v := range vals {
+		pl[i] = core.Player{ID: "p", Attributes: core.Attributes{attr: str(v)}}
+	}
+	return &Candidate{Players: pl, Teams: map[string][]core.Player{"red": pl}, TeamOrder: []string{"red"}}
+}
+
+// Purpose: Verify the FlexMatch "SameGameMode" behaviour: a batchDistance over a
+// string attribute with NO maxDistance forms batches by exact value, so every
+// player must share the same value (maxDistance defaults to 0).
+// Method:  batchDistance(batchAttribute="mode") with no bounds; all-same vs mixed.
+// Expect:  all-same → true; any differing value → false.
+func TestBatchDistance_StringNoBoundsRequiresSameValue(t *testing.T) {
+	r := &ruleset.Rule{Name: "SameMode", Type: ruleset.RuleBatchDistance, BatchAttribute: "mode"}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	ok, err := ev.Evaluate(strAttrCand("mode", "ranked", "ranked", "ranked"))
+	require.NoError(t, err)
+	assert.True(t, ok, "identical values form one batch")
+
+	ok, err = ev.Evaluate(strAttrCand("mode", "ranked", "casual"))
+	require.NoError(t, err)
+	assert.False(t, ok, "no maxDistance on a string attribute means same-value batching")
+}
+
+// Purpose: Document that string-mode batchDistance counts distinct values across
+// all players and is unaffected by partyAggregation (which only aggregates
+// numeric attributes).
+// Method:  same string rule with partyAggregation "" and "max" over two parties
+//
+//	carrying distinct values; maxDistance=0.
+//
+// Expect:  both configurations reject (distinct count 1 > 0) identically.
+func TestBatchDistance_StringIgnoresPartyAggregation(t *testing.T) {
+	mk := func(agg string) Evaluator {
+		r := &ruleset.Rule{Name: "x", Type: ruleset.RuleBatchDistance,
+			BatchAttribute: "mode", MaxDistance: ptrF(0), PartyAggregation: agg}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	p1 := []core.Player{{ID: "a", Attributes: core.Attributes{"mode": str("ranked")}}}
+	p2 := []core.Player{{ID: "b", Attributes: core.Attributes{"mode": str("casual")}}}
+	c := &Candidate{
+		Players: append(append([]core.Player{}, p1...), p2...),
+		Parties: [][]core.Player{p1, p2},
+	}
+	ok, err := mk("").Evaluate(c)
+	require.NoError(t, err)
+	assert.False(t, ok, "two distinct values exceed maxDistance 0")
+	ok, _ = mk("max").Evaluate(c)
+	assert.False(t, ok, "partyAggregation does not change string-mode evaluation")
+}
+
+// Purpose: Verify the distance rule rejects a non-numeric measurement with an
+// error (FlexMatch: distance measurements must be numerical attributes).
+// Method:  distance rule over players.attributes[character] (a string attribute).
+// Expect:  Evaluate returns an error.
+func TestDistance_StringMeasurementErrors(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleDistance,
+		Measurements:   []string{"players.attributes[character]"},
+		ReferenceValue: json.RawMessage(`0`), MaxDistance: ptrF(5)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	_, err = ev.Evaluate(strCand("mage"))
+	assert.Error(t, err, "a string measurement is not valid for a distance rule")
+}
+
+// Purpose: Verify comparison ordering operators (<, <=, >, >=) are unsatisfiable
+// on string measurements (only = and != are meaningful for strings), returning
+// false rather than erroring or panicking.
+// Method:  character "mage" compared to "mage" with each ordering operator.
+// Expect:  every ordering operator yields false.
+func TestComparison_StringOrderingOperators(t *testing.T) {
+	for _, op := range []string{"<", "<=", ">", ">="} {
+		t.Run(op, func(t *testing.T) {
+			r := &ruleset.Rule{Name: "x", Type: ruleset.RuleComparison,
+				Measurements:   []string{"players.attributes[character]"},
+				ReferenceValue: json.RawMessage(`"mage"`), Operation: op}
+			ev, err := Build(r, nil)
+			require.NoError(t, err)
+			ok, err := ev.Evaluate(strCand("mage"))
+			require.NoError(t, err)
+			assert.False(t, ok, "ordering operator %q is unsupported on strings", op)
+		})
+	}
+}
+
+// Purpose: Verify the latency rule fails when no single region is reported by
+// every player (a match must place all players in one shared region under the
+// maximum).
+// Method:  p1 reports only us-east-1, p2 reports only us-west-2, both under max.
+// Expect:  false — there is no region common to both players.
+func TestLatency_NoSharedRegion(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(100)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	pl := []core.Player{
+		{Latencies: map[string]int{"us-east-1": 50}},
+		{Latencies: map[string]int{"us-west-2": 50}},
+	}
+	ok, err := ev.Evaluate(&Candidate{Players: pl})
+	require.NoError(t, err)
+	assert.False(t, ok, "no region is reported by both players")
 }

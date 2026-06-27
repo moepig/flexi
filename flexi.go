@@ -64,6 +64,10 @@ type Matchmaker struct {
 	// defaults holds parsed playerAttributes defaults, applied to players that
 	// omit a declared attribute when they are enqueued.
 	defaults map[string]core.Attribute
+	// attrKinds maps each declared playerAttribute name to its expected kind, so
+	// Enqueue can reject tickets whose values disagree with the rule set's
+	// declared types. Attributes not declared in the rule set are not checked.
+	attrKinds map[string]core.AttributeKind
 
 	mu        sync.Mutex
 	statuses  map[string]TicketStatus
@@ -124,6 +128,7 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 		q:                queue.New(),
 		clock:            cfg.clock,
 		defaults:         defaults,
+		attrKinds:        buildAttrKinds(rs),
 		statuses:         make(map[string]TicketStatus),
 		ticketToProposal: make(map[string]*proposal),
 		ruleMetrics:      make(map[string][]core.RuleMetric),
@@ -148,6 +153,9 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 	if len(t.Players) == 0 {
 		return errors.New("flexi: ticket must have at least one player")
 	}
+	if err := m.checkAttributeTypes(t); err != nil {
+		return err
+	}
 	t = m.applyDefaults(t)
 	t.EnqueuedAt = m.clock.Now()
 
@@ -162,6 +170,49 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 	}
 	m.statuses[t.ID] = StatusQueued
 	m.mu.Unlock()
+	return nil
+}
+
+// buildAttrKinds maps each declared playerAttribute name to the AttributeKind
+// implied by its declared type. Unknown type strings are skipped; the rule set
+// has already been validated to use only the four supported types.
+func buildAttrKinds(rs *ruleset.RuleSet) map[string]core.AttributeKind {
+	out := make(map[string]core.AttributeKind, len(rs.PlayerAttributes))
+	for _, pa := range rs.PlayerAttributes {
+		switch pa.Type {
+		case "string":
+			out[pa.Name] = core.AttrString
+		case "number":
+			out[pa.Name] = core.AttrNumber
+		case "string_list":
+			out[pa.Name] = core.AttrStringList
+		case "string_number_map":
+			out[pa.Name] = core.AttrStringNumberMap
+		}
+	}
+	return out
+}
+
+// checkAttributeTypes rejects a ticket if any player supplies a value for a
+// declared attribute whose kind disagrees with the rule set's declared type.
+// Attributes not declared in the rule set are passed through unchecked, mirroring
+// FlexMatch, which carries undeclared player data without using it in matching.
+func (m *Matchmaker) checkAttributeTypes(t Ticket) error {
+	if len(m.attrKinds) == 0 {
+		return nil
+	}
+	for _, p := range t.Players {
+		for name, a := range p.Attributes {
+			want, declared := m.attrKinds[name]
+			if !declared {
+				continue
+			}
+			if a.Kind != want {
+				return fmt.Errorf("flexi: player %q attribute %q has kind %v, but the rule set declares %v",
+					p.ID, name, a.Kind, want)
+			}
+		}
+	}
 	return nil
 }
 

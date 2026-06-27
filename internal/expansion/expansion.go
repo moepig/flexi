@@ -162,8 +162,10 @@ func setAlgorithmField(a *ruleset.Algorithm, field string, value json.RawMessage
 }
 
 func jsonNumberPtr(value json.RawMessage, dst **float64) error {
-	var f float64
-	if err := json.Unmarshal(value, &f); err != nil {
+	// Accept string-encoded numbers too, matching ruleset.Rule's maxDistance /
+	// minDistance parsing (the FlexMatch docs use both forms).
+	f, err := ruleset.ParseNumber(value)
+	if err != nil {
 		return err
 	}
 	*dst = &f

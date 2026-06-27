@@ -32,6 +32,7 @@ func metricNames(metrics []flexi.RuleMetric) []string {
 // short-circuiting evaluator would never reach Pass.
 const failFirstRS = `{
   "name": "fail-first",
+  "ruleLanguageVersion": "1.0",
   "playerAttributes": [{"name": "skill", "type": "number"}],
   "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
   "rules": [
@@ -163,6 +164,7 @@ func TestMetrics_CancelledTicket(t *testing.T) {
 func TestMetrics_CompoundReportsTopLevelOnly(t *testing.T) {
 	body := `{
 	  "name": "compound",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name": "skill", "type": "number"}],
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [
@@ -194,6 +196,7 @@ func TestMetrics_CompoundReportsTopLevelOnly(t *testing.T) {
 func TestMetrics_NoRulesIsEmpty(t *testing.T) {
 	body := `{
 	  "name": "norules",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}]
 	}`
 	mm, err := flexi.New([]byte(body))
@@ -213,6 +216,7 @@ func TestMetrics_NoRulesIsEmpty(t *testing.T) {
 func TestMetrics_AccumulatesAcrossTicks(t *testing.T) {
 	body := `{
 	  "name": "expand",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [

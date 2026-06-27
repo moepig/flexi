@@ -32,15 +32,18 @@ func buildBatchDistance(r *ruleset.Rule) (Evaluator, error) {
 func (b *batchDistance) Name() string { return b.name }
 
 func (b *batchDistance) Evaluate(c *Candidate) (bool, error) {
-	if b.maxDist == nil && b.minDist == nil {
-		return true, nil
-	}
-
 	// String attributes are batched by value equivalency rather than numeric
 	// spread: the distance is the count of distinct values present in the match
 	// minus one (so maxDistance=0 requires every player to share one value).
+	// This is checked before the no-bounds short-circuit because the canonical
+	// FlexMatch string example ("SameGameMode") omits maxDistance and still
+	// means "everyone must share the same value".
 	if b.isStringMode(c.Players) {
 		return b.evaluateString(c.Players)
+	}
+
+	if b.maxDist == nil && b.minDist == nil {
+		return true, nil
 	}
 
 	parties := c.Parties
@@ -97,7 +100,10 @@ func (b *batchDistance) isStringMode(players []core.Player) bool {
 }
 
 // evaluateString admits a match when the number of distinct string values for
-// the batch attribute, minus one, stays within the configured bounds.
+// the batch attribute, minus one, stays within the configured bounds. When no
+// bounds are configured the rule forms batches by exact value equivalency
+// (maxDistance defaults to 0), so every player must share one value — this is
+// the FlexMatch "SameGameMode" behaviour.
 func (b *batchDistance) evaluateString(players []core.Player) (bool, error) {
 	seen := make(map[string]struct{})
 	for _, p := range players {
@@ -111,7 +117,12 @@ func (b *batchDistance) evaluateString(players []core.Player) (bool, error) {
 		return true, nil
 	}
 	distance := float64(len(seen) - 1)
-	if b.maxDist != nil && distance > *b.maxDist {
+	maxDist := b.maxDist
+	if maxDist == nil && b.minDist == nil {
+		zero := 0.0
+		maxDist = &zero
+	}
+	if maxDist != nil && distance > *maxDist {
 		return false, nil
 	}
 	if b.minDist != nil && distance < *b.minDist {

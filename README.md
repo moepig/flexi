@@ -8,9 +8,9 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 
 ## Features
 
-- **AWS-compatible JSON**: feed the same rule set documented in the FlexMatch developer guide, including the AWS property-expression dialect (`teams[red].players.attributes[skill]`).
+- **AWS-compatible JSON**: feed the same rule set documented in the FlexMatch developer guide, including the AWS property-expression dialect (`teams[red].players.attributes[skill]`). `ruleLanguageVersion` is required and must be `"1.0"`.
 - **All eight rule kinds**: `comparison`, `distance`, `absoluteSort`, `distanceSort`, `batchDistance`, `collection`, `latency`, `compound`.
-- **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`, with `default` values applied to players that omit an attribute.
+- **All four player attribute types**: `string`, `number`, `string_list`, `string_number_map`, with `default` values applied to players that omit an attribute. A value whose kind disagrees with the declared type is rejected at `Enqueue`; undeclared attributes pass through.
 - **Property-expression aggregations**: `min`, `max`, `avg`, `median`, `sum`, `count`, `stddev`, `flatten`, `set_intersection`, with per-team nesting (`avg(teams[*].players.attributes[skill])` → one result per team).
 - **partyAggregation**: `min` / `max` / `avg` (and `union` / `intersection` for collection) on multi-player tickets.
 - **Compound statements**: AWS string form with `and` / `or` / `not` / `xor`, e.g. `"or(and(A,B), not(C))"`.
@@ -172,6 +172,17 @@ matches, _ = mm.Tick()            // expansion steps with waitTimeSeconds<=60 ap
   ]
 }
 ```
+
+## FlexMatch compliance notes
+
+A few rule types have subtle AWS semantics that `flexi` follows deliberately:
+
+- **`collection` operations**
+  - `contains` — counts how many times the reference value appears across the (flattened) measurement and bounds that count with `minCount`/`maxCount` (e.g. "no more than 5 medics in a match"). With no bound it just requires the value to be present.
+  - `intersection` — counts the values shared by **every** player's collection and takes **no** `referenceValue` (e.g. "all players share at least one game mode", `minCount: 1`).
+  - `reference_intersection_count` — requires **each** player's collection to intersect the `referenceValue` collection within `minCount`/`maxCount`. The `referenceValue` may be a literal array or a property expression such as `set_intersection(flatten(teams[*].players.attributes[preferredOpponents]))`.
+- **`batchDistance`** — a **numeric** attribute is grouped by spread (`maxDistance` / `minDistance`); a **string** attribute is grouped by value equivalency, where the distance is `(distinct values) - 1`. A string `batchDistance` with **no** `maxDistance` therefore requires every player to share the same value (the AWS "SameGameMode" form).
+- **`maxDistance` / `minDistance`** accept either a JSON number (`500`) or a string-encoded number (`"500"`); the AWS docs use both forms.
 
 ## Ticket status and player acceptance
 

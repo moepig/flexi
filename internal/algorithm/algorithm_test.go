@@ -46,6 +46,7 @@ func evals(t *testing.T, rs *ruleset.RuleSet) []rule.Evaluator {
 func TestBuild_FormsTwoTeams(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [
 	    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
 	    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
@@ -66,6 +67,7 @@ func TestBuild_FormsTwoTeams(t *testing.T) {
 func TestBuild_RespectsBatchDistance(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [{"name": "all", "minPlayers": 3, "maxPlayers": 3}],
 	  "rules": [{"name": "BD", "type": "batchDistance",
 	    "batchAttribute": "skill", "maxDistance": 5}]
@@ -84,6 +86,7 @@ func TestBuild_RespectsBatchDistance(t *testing.T) {
 func TestBuild_NoMatchUnderMin(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [{"name": "all", "minPlayers": 4, "maxPlayers": 4}]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 11)}
@@ -98,6 +101,7 @@ func TestBuild_NoMatchUnderMin(t *testing.T) {
 func TestBuild_QuantityExpansion(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [{"name": "team", "minPlayers": 2, "maxPlayers": 2, "quantity": 2}]
 	}`)
 	tickets := []core.Ticket{solo("a", 1), solo("b", 2), solo("c", 3), solo("d", 4)}
@@ -113,6 +117,7 @@ func TestBuild_QuantityExpansion(t *testing.T) {
 func TestBuild_BalancedStrategy(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "algorithm": {"strategy": "balanced", "balancedAttribute": "skill"},
 	  "teams": [
@@ -143,6 +148,7 @@ func ids(tickets []core.Ticket) []string {
 func TestOrderBatch_AbsoluteSort(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
 	  "rules": [{"name": "S", "type": "absoluteSort",
@@ -160,6 +166,7 @@ func TestOrderBatch_AbsoluteSort(t *testing.T) {
 func TestOrderBatch_DistanceSort(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
 	  "rules": [{"name": "S", "type": "distanceSort",
@@ -170,6 +177,43 @@ func TestOrderBatch_DistanceSort(t *testing.T) {
 	assert.Equal(t, []string{"a", "d", "b", "c"}, ids(out))
 }
 
+// Purpose: Pin down the distinction between absoluteSort and distanceSort: an
+// absoluteSort orders the non-anchor tickets purely by attribute value, so the
+// result is independent of the anchor's own value; a distanceSort orders by
+// distance from the anchor, so it does depend on the anchor's value.
+// Method:  Two batches identical except for the anchor "a"'s skill (0 vs 100).
+// Expect:  absoluteSort yields the same order for both anchors; distanceSort does
+//
+//	not.
+func TestOrderBatch_AbsoluteSortIndependentOfAnchor(t *testing.T) {
+	abs := newRS(t, `{
+	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+	  "rules": [{"name": "S", "type": "absoluteSort",
+	    "sortDirection": "ascending", "sortAttribute": "skill"}]
+	}`)
+	lowAnchor := []core.Ticket{solo("a", 0), solo("b", 90), solo("c", 10), solo("d", 30)}
+	highAnchor := []core.Ticket{solo("a", 100), solo("b", 90), solo("c", 10), solo("d", 30)}
+	// Non-anchor tickets sort ascending by value regardless of the anchor value.
+	assert.Equal(t, []string{"a", "c", "d", "b"}, ids(orderBatch(abs, lowAnchor)))
+	assert.Equal(t, []string{"a", "c", "d", "b"}, ids(orderBatch(abs, highAnchor)))
+
+	dist := newRS(t, `{
+	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+	  "rules": [{"name": "S", "type": "distanceSort",
+	    "sortDirection": "ascending", "sortAttribute": "skill"}]
+	}`)
+	// anchor 0:   |b-a|=90, |c-a|=10, |d-a|=30 → c,d,b
+	assert.Equal(t, []string{"a", "c", "d", "b"}, ids(orderBatch(dist, lowAnchor)))
+	// anchor 100: |b-a|=10, |c-a|=90, |d-a|=70 → b,d,c
+	assert.Equal(t, []string{"a", "b", "d", "c"}, ids(orderBatch(dist, highAnchor)))
+}
+
 // Purpose: Verify batchingPreference "sorted" pre-sorts the whole pool by
 // sortByAttributes (ascending), including the first ticket.
 // Method:  Four tickets with unsorted skills; strategy exhaustiveSearch.
@@ -177,6 +221,7 @@ func TestOrderBatch_DistanceSort(t *testing.T) {
 func TestOrderBatch_SortByAttributes(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "algorithm": {"strategy": "exhaustiveSearch", "batchingPreference": "sorted",
 	    "sortByAttributes": ["skill"]},
@@ -215,6 +260,7 @@ func party(id string, skills ...float64) core.Ticket {
 func TestOrderBatch_AbsoluteSort_Descending(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
 	  "rules": [{"name": "S", "type": "absoluteSort",
@@ -233,6 +279,7 @@ func TestOrderBatch_AbsoluteSort_MapKey(t *testing.T) {
 	mk := func(mapKey string) []string {
 		rs := newRS(t, `{
 		  "name": "x",
+		  "ruleLanguageVersion": "1.0",
 		  "playerAttributes": [{"name":"ping","type":"string_number_map"}],
 		  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
 		  "rules": [{"name": "S", "type": "absoluteSort",
@@ -260,6 +307,7 @@ func TestOrderBatch_AbsoluteSort_PartyAggregation(t *testing.T) {
 	mk := func(agg string) []string {
 		rs := newRS(t, `{
 		  "name": "x",
+		  "ruleLanguageVersion": "1.0",
 		  "playerAttributes": [{"name":"skill","type":"number"}],
 		  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
 		  "rules": [{"name": "S", "type": "absoluteSort",
@@ -279,6 +327,7 @@ func TestOrderBatch_AbsoluteSort_PartyAggregation(t *testing.T) {
 func TestOrderBatch_SortByAttributes_Tiebreak(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"tier","type":"string"},{"name":"skill","type":"number"}],
 	  "algorithm": {"strategy": "exhaustiveSearch", "batchingPreference": "sorted",
 	    "sortByAttributes": ["tier", "skill"]},
@@ -303,6 +352,7 @@ func TestOrderBatch_SortByAttributes_Tiebreak(t *testing.T) {
 func TestOrderBatch_RandomKeepsQueueOrder(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "algorithm": {"strategy": "exhaustiveSearch", "batchingPreference": "random"},
 	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}]
@@ -318,8 +368,8 @@ func TestOrderBatch_RandomKeepsQueueOrder(t *testing.T) {
 // Expect:  Both produce a match over the same tickets.
 func TestBuild_BackfillPriorityIsNoop(t *testing.T) {
 	tickets := []core.Ticket{solo("a", 1), solo("b", 2)}
-	rsDefault := newRS(t, `{"name":"x","teams":[{"name":"all","minPlayers":2,"maxPlayers":2}]}`)
-	rsHigh := newRS(t, `{"name":"x","algorithm":{"backfillPriority":"high"},
+	rsDefault := newRS(t, `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":2,"maxPlayers":2}]}`)
+	rsHigh := newRS(t, `{"name":"x","ruleLanguageVersion":"1.0","algorithm":{"backfillPriority":"high"},
 	  "teams":[{"name":"all","minPlayers":2,"maxPlayers":2}]}`)
 	outD, _, _ := Build(rsDefault, evals(t, rsDefault), tickets)
 	outH, _, _ := Build(rsHigh, evals(t, rsHigh), tickets)
@@ -335,6 +385,7 @@ func TestBuild_BackfillPriorityIsNoop(t *testing.T) {
 func TestBuild_BalancedLargeMatch(t *testing.T) {
 	rs := newRS(t, `{
 	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "algorithm": {"strategy": "balanced", "balancedAttribute": "skill"},
 	  "teams": [

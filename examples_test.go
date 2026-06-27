@@ -63,6 +63,7 @@ func TestEndToEnd_BasicMatch(t *testing.T) {
 func TestEndToEnd_NoMatchUntilExpansion(t *testing.T) {
 	body := `{
 	  "name": "expand",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [
@@ -101,6 +102,7 @@ func TestEndToEnd_NoMatchUntilExpansion(t *testing.T) {
 func TestEndToEnd_LatencyRule(t *testing.T) {
 	body := `{
 	  "name": "lat",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [{"name": "P", "type": "latency", "maxLatency": 80}]
 	}`
@@ -119,6 +121,7 @@ func TestEndToEnd_LatencyRule(t *testing.T) {
 func TestEndToEnd_LatencyRule_NoMatch(t *testing.T) {
 	body := `{
 	  "name": "lat",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [{"name": "P", "type": "latency", "maxLatency": 50}]
 	}`
@@ -171,6 +174,7 @@ func TestEndToEnd_InvalidRuleSet(t *testing.T) {
 func TestEndToEnd_PartyTicket(t *testing.T) {
 	body := `{
 	  "name": "party",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [
 	    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
 	    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
@@ -216,6 +220,7 @@ func contains(s []string, v string) bool {
 func TestEndToEnd_MultiplePartiesNotSplit(t *testing.T) {
 	body := `{
 	  "name": "parties",
+	  "ruleLanguageVersion": "1.0",
 	  "teams": [
 	    {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
 	    {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
@@ -255,6 +260,7 @@ func TestEndToEnd_MultiplePartiesNotSplit(t *testing.T) {
 func TestEndToEnd_PlayerAttributeDefault(t *testing.T) {
 	body := `{
 	  "name": "defaults",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name": "skill", "type": "number", "default": 50}],
 	  "teams": [{"name": "all", "minPlayers": 4, "maxPlayers": 4}],
 	  "rules": [{"name": "Tight", "type": "batchDistance",
@@ -289,6 +295,7 @@ func TestEndToEnd_PlayerAttributeDefault(t *testing.T) {
 func TestEndToEnd_ExpansionAgeSelectionOldest(t *testing.T) {
 	body := `{
 	  "name": "expand-oldest",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "algorithm": {"expansionAgeSelection": "oldest"},
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
@@ -325,6 +332,7 @@ func TestEndToEnd_ExpansionAgeSelectionOldest(t *testing.T) {
 func TestEndToEnd_ExpansionAgeSelectionNewest(t *testing.T) {
 	body := `{
 	  "name": "expand-newest",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "algorithm": {"expansionAgeSelection": "newest"},
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
@@ -364,6 +372,7 @@ func TestEndToEnd_ExpansionAgeSelectionNewest(t *testing.T) {
 func TestEndToEnd_AbsoluteSortInTick(t *testing.T) {
 	body := `{
 	  "name": "sort-tick",
+	  "ruleLanguageVersion": "1.0",
 	  "playerAttributes": [{"name":"skill","type":"number"}],
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
 	  "rules": [{"name": "S", "type": "absoluteSort",
@@ -379,4 +388,46 @@ func TestEndToEnd_AbsoluteSortInTick(t *testing.T) {
 	require.NotEmpty(t, matches)
 	assert.Equal(t, []string{"a", "c"}, matches[0].TicketIDs,
 		"absoluteSort places the lowest-skill ticket with the anchor")
+}
+
+// Purpose: Verify that when a rule set defines multiple compound rules, ALL of
+// them must hold for a match to form (FlexMatch: "all compound rules must be
+// true to form a match").
+// Method:  children A (avg<=50) and B (max<=80); compounds Any=or(A,B) and
+//
+//	Both=and(A,B). Enqueue a pair where Any holds but Both fails; then a pair
+//	that satisfies both.
+//
+// Expect:  the first pair forms no match; once a satisfiable pair is available a
+//
+//	match forms.
+func TestEndToEnd_MultipleCompoundRulesAllMustHold(t *testing.T) {
+	body := `{
+	  "name": "multi-compound",
+	  "ruleLanguageVersion": "1.0",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}],
+	  "rules": [
+	    {"name":"A","type":"comparison","measurements":["avg(players.attributes[skill])"],"referenceValue":50,"operation":"<="},
+	    {"name":"B","type":"comparison","measurements":["max(players.attributes[skill])"],"referenceValue":80,"operation":"<="},
+	    {"name":"Any","type":"compound","statement":"or(A,B)"},
+	    {"name":"Both","type":"compound","statement":"and(A,B)"}
+	  ]
+	}`
+	mm, err := flexi.New([]byte(body))
+	require.NoError(t, err)
+
+	// avg(10,90)=50 → A true; max=90 → B false. Any holds but Both fails.
+	require.NoError(t, mm.Enqueue(solo("a", 10)))
+	require.NoError(t, mm.Enqueue(solo("b", 90)))
+	matches, err := mm.Tick()
+	require.NoError(t, err)
+	assert.Empty(t, matches, "Both=and(A,B) fails, so no match forms even though Any holds")
+
+	// avg(10,30)=20 → A true; max=30 → B true: a satisfiable pair now exists.
+	require.NoError(t, mm.Enqueue(solo("c", 10)))
+	require.NoError(t, mm.Enqueue(solo("d", 30)))
+	matches, err = mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1, "a pair satisfying both compound rules forms a match")
 }

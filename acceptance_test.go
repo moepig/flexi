@@ -54,6 +54,7 @@ const acceptReqTimeoutRS = `{
 // used to verify the request deadline does not evict tickets held in a proposal.
 const reqTimeoutNoAcceptTimeoutRS = `{
   "name": "accept-no-acctimeout-reqtimeout",
+  "ruleLanguageVersion": "1.0",
   "teams": [
     {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
     {"name": "blue", "minPlayers": 2, "maxPlayers": 2}
@@ -66,6 +67,7 @@ const reqTimeoutNoAcceptTimeoutRS = `{
 // never match and will time out at the request deadline.
 const requestTimeoutRS = `{
   "name": "req-timeout",
+  "ruleLanguageVersion": "1.0",
   "playerAttributes": [{"name": "skill", "type": "number"}],
   "teams": [
     {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
@@ -645,6 +647,7 @@ func TestRequestTimeout_DoesNotAffectProposalTickets(t *testing.T) {
 func TestRequestTimeout_NegativeRejected(t *testing.T) {
 	body := `{
       "name": "bad-req",
+      "ruleLanguageVersion": "1.0",
       "teams": [{"name": "t", "minPlayers": 1, "maxPlayers": 1}],
       "requestTimeoutSeconds": -1
     }`
@@ -673,6 +676,7 @@ func TestAcceptance_Disabled_BehavesLikePlainMatch(t *testing.T) {
 func TestAcceptance_NegativeTimeoutRejected(t *testing.T) {
 	body := `{
       "name": "bad",
+      "ruleLanguageVersion": "1.0",
       "teams": [{"name": "t", "minPlayers": 1, "maxPlayers": 1}],
       "acceptanceRequired": true,
       "acceptanceTimeoutSeconds": -1
@@ -798,6 +802,7 @@ func TestTick_AcceptedProposalAlongsideUnmatchedQueuedTicket(t *testing.T) {
 func TestAcceptance_ZeroTimeoutMeansNoTimeout(t *testing.T) {
 	body := `{
       "name": "no-timeout",
+      "ruleLanguageVersion": "1.0",
       "playerAttributes": [{"name": "skill", "type": "number"}],
       "teams": [
         {"name": "red",  "minPlayers": 2, "maxPlayers": 2},
