@@ -262,6 +262,39 @@ func TestLatency(t *testing.T) {
 	assert.False(t, ok)
 }
 
+// Purpose: Pin the latency maxLatency boundary to the FlexMatch documentation.
+// The rule-type reference defines maxLatency as "The maximum acceptable latency
+// value for a location" and says a latency rule "ignores any location with a
+// latency higher than the maximum" — i.e. the maximum itself is acceptable and
+// only values strictly above it are rejected. The boundary is therefore
+// inclusive (<=): a player sitting exactly at maxLatency is accepted.
+// Method:  maxLatency=100. A region where both players are exactly 100, then a
+//
+//	region where one player is 101.
+//
+// Expect:  exactly-at-limit → true; one-over-limit → false.
+func TestLatency_MaxLatencyBoundaryInclusive(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(100)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+
+	atLimit := []core.Player{
+		{Latencies: map[string]int{"us-east-1": 100}},
+		{Latencies: map[string]int{"us-east-1": 100}},
+	}
+	ok, err := ev.Evaluate(&Candidate{Players: atLimit})
+	require.NoError(t, err)
+	assert.True(t, ok, "latency equal to maxLatency is accepted (<=)")
+
+	overLimit := []core.Player{
+		{Latencies: map[string]int{"us-east-1": 100}},
+		{Latencies: map[string]int{"us-east-1": 101}},
+	}
+	ok, err = ev.Evaluate(&Candidate{Players: overLimit})
+	require.NoError(t, err)
+	assert.False(t, ok, "latency one above maxLatency is rejected")
+}
+
 // Purpose: Verify that a compound(and) rule requires all child rules to pass.
 // Method:  Build an AND of comparison(avg<=50) and batchDistance(maxDist=20); evaluate against a passing set and a failing set.
 // Expect:  Both children satisfied → true; one child fails → false.

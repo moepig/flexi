@@ -195,6 +195,24 @@ func TestOrderBatch_DistanceSort(t *testing.T) {
 	assert.Equal(t, []string{"a", "d", "b", "c"}, ids(out))
 }
 
+// Purpose: Verify a distanceSort rule honours sortDirection "descending": the
+// non-anchor tickets are ordered by decreasing distance from the anchor.
+// Method:  Anchor "a" skill=50; others at 40/90/55; sort descending by distance.
+// Expect:  Farthest-from-50 first: 90(d=40), 40(d=10), 55(d=5).
+func TestOrderBatch_DistanceSort_Descending(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
+	  "playerAttributes": [{"name":"skill","type":"number"}],
+	  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+	  "rules": [{"name": "S", "type": "distanceSort",
+	    "sortDirection": "descending", "sortAttribute": "skill"}]
+	}`)
+	tickets := []core.Ticket{solo("a", 50), solo("b", 40), solo("c", 90), solo("d", 55)}
+	out := orderBatch(rs, tickets)
+	assert.Equal(t, []string{"a", "c", "b", "d"}, ids(out))
+}
+
 // Purpose: Pin down the distinction between absoluteSort and distanceSort: an
 // absoluteSort orders the non-anchor tickets purely by attribute value, so the
 // result is independent of the anchor's own value; a distanceSort orders by
