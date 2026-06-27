@@ -211,3 +211,62 @@ func TestParse_Errors(t *testing.T) {
 		})
 	}
 }
+
+// Purpose: Verify batchingPreference is rejected when paired with an incompatible
+// strategy, per the FlexMatch property definitions: "random" and "sorted" are
+// "Valid only with strategy = exhaustiveSearch", while "largestPopulation" and
+// "fastestRegion" are "Valid only with strategy = balanced".
+// Method:  Parse each incompatible strategy/batchingPreference pairing (including
+//          the default, omitted strategy which is exhaustiveSearch).
+// Expect:  every pairing is rejected with ErrInvalidRuleSet.
+func TestParse_BatchingPreferenceStrategyCompatibility(t *testing.T) {
+	cases := map[string]string{
+		"sorted requires exhaustiveSearch": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "playerAttributes":[{"name":"skill","type":"number"}],
+		  "algorithm":{"strategy":"balanced","balancedAttribute":"skill","batchingPreference":"sorted","sortByAttributes":["skill"]},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"random requires exhaustiveSearch": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "playerAttributes":[{"name":"skill","type":"number"}],
+		  "algorithm":{"strategy":"balanced","balancedAttribute":"skill","batchingPreference":"random"},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"largestPopulation requires balanced": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "algorithm":{"strategy":"exhaustiveSearch","batchingPreference":"largestPopulation"},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"fastestRegion requires balanced (default strategy)": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "algorithm":{"batchingPreference":"fastestRegion"},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(body))
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInvalidRuleSet), "err: %v", err)
+		})
+	}
+}
+
+// Purpose: Verify the rule set rejects duplicate names, which FlexMatch requires
+// to be unique: team names ("A unique name for the team"), playerAttribute names
+// ("A unique name for player attribute"), and rule names ("All rules in a rule
+// set must have unique names").
+// Method:  Parse three rule sets, each introducing one kind of duplicate name.
+// Expect:  every case is rejected with ErrInvalidRuleSet.
+func TestParse_DuplicateNamesRejected(t *testing.T) {
+	cases := map[string]string{
+		"duplicate team name": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "teams":[{"name":"red","minPlayers":1,"maxPlayers":2},{"name":"red","minPlayers":1,"maxPlayers":2}]}`,
+		"duplicate playerAttribute name": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "playerAttributes":[{"name":"skill","type":"number"},{"name":"skill","type":"number"}],
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`,
+		"duplicate rule name": `{"name":"x","ruleLanguageVersion":"1.0",
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"R","type":"latency","maxLatency":100},{"name":"R","type":"latency","maxLatency":100}]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Parse([]byte(body))
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, ErrInvalidRuleSet), "err: %v", err)
+		})
+	}
+}

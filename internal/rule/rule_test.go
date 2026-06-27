@@ -608,6 +608,44 @@ func TestCollection_ContainsCount(t *testing.T) {
 	assert.False(t, ok, "0 medics < minCount 1")
 }
 
+// Purpose: Pin AWS FlexMatch "Example: Set team-level requirements and latency
+// limits" (match-examples-3) "OverallMedicLimit" rule using its verbatim
+// expression flatten(teams[*].players.attributes[character]) with operation
+// contains, referenceValue "medic", maxCount 5 ("Don't allow more than 5 medics
+// in the game"). This is the authoritative reading of the otherwise terse
+// rule-type description: the doc note says flatten "flattens everything into a
+// single list of characters in the game" and the rule "checks against the maximum
+// counts", i.e. contains counts medic OCCURRENCES across the flattened match-wide
+// list, bounded by maxCount — exactly what flexi implements.
+// Method:  players whose flattened characters total six then five medics; maxCount 5.
+// Expect:  six medics -> false (exceeds 5); five medics -> true.
+func TestCollection_ContainsDocExample3MedicLimit(t *testing.T) {
+	mk := func() Evaluator {
+		r := &ruleset.Rule{Name: "OverallMedicLimit", Type: ruleset.RuleCollection,
+			Measurements:   []string{"flatten(teams[*].players.attributes[character])"},
+			Operation:      "contains",
+			ReferenceValue: json.RawMessage(`"medic"`),
+			MaxCount:       ptrI(5)}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	cand := func(chars ...string) *Candidate {
+		pl := make([]core.Player, len(chars))
+		for i, ch := range chars {
+			pl[i] = core.Player{ID: "p", Attributes: core.Attributes{"character": sl(ch)}}
+		}
+		return &Candidate{Players: pl,
+			Teams: map[string][]core.Player{"all": pl}, TeamOrder: []string{"all"}}
+	}
+	ok, err := mk().Evaluate(cand("medic", "medic", "medic", "medic", "medic", "medic"))
+	require.NoError(t, err)
+	assert.False(t, ok, "six medics exceed maxCount 5")
+
+	ok, _ = mk().Evaluate(cand("medic", "medic", "medic", "medic", "medic", "knight"))
+	assert.True(t, ok, "five medics are within maxCount 5")
+}
+
 // Purpose: Verify reference_intersection_count evaluates EACH player's collection
 // against the reference value independently (the FlexMatch "preferred opponents"
 // example): every player's string list must intersect the reference within
@@ -645,6 +683,48 @@ func TestCollection_ReferenceIntersectionPerPlayer(t *testing.T) {
 		{Attributes: core.Attributes{"myCharacter": sl("rogue"), "preferredOpponents": sl("mage", "knight")}},
 	}}
 	ok, _ = mk().Evaluate(fail)
+	assert.False(t, ok, "a chosen character off the common opponents list fails")
+}
+
+// Purpose: Pin AWS FlexMatch "Example: Find intersections across multiple player
+// attributes" (match-examples-5) using the EXACT property expressions from the
+// documented rule set — the measurement flatten(teams[*].players.attributes[...])
+// and the referenceValue set_intersection(flatten(teams[*].players.attributes[...]))
+// — rather than the simplified players.attributes[...] forms the other tests use.
+// This confirms flexi's reference_intersection_count matches the documented
+// behaviour even with the doc's teams[*]/flatten expressions: each player's chosen
+// character (one string list per player in the measurement) must intersect the
+// characters common to every player's preferred-opponents list, and the rule fails
+// if any single player's character is off that common list ("If any string list in
+// the measurement does not intersect with the reference value ... the rule fails").
+// Method:  team "red" with two players; the verbatim doc expressions; minCount 1.
+// Expect:  every character on the common opponents list -> true; one player's
+//          character off the common list -> false.
+func TestCollection_ReferenceIntersectionCount_DocExample5(t *testing.T) {
+	mk := func() Evaluator {
+		r := &ruleset.Rule{Name: "OpponentMatch", Type: ruleset.RuleCollection,
+			Measurements:   []string{"flatten(teams[*].players.attributes[myCharacter])"},
+			Operation:      "reference_intersection_count",
+			ReferenceValue: json.RawMessage(`"set_intersection(flatten(teams[*].players.attributes[preferredOpponents]))"`),
+			MinCount:       ptrI(1)}
+		ev, err := Build(r, nil)
+		require.NoError(t, err)
+		return ev
+	}
+	cand := func(p2char string) *Candidate {
+		red := []core.Player{
+			{ID: "p1", Attributes: core.Attributes{"myCharacter": sl("knight"), "preferredOpponents": sl("mage", "knight", "rogue")}},
+			{ID: "p2", Attributes: core.Attributes{"myCharacter": sl(p2char), "preferredOpponents": sl("mage", "knight")}},
+		}
+		return &Candidate{Players: red, Teams: map[string][]core.Player{"red": red}, TeamOrder: []string{"red"}}
+	}
+	// common preferredOpponents = {mage, knight}; both chosen characters are on it.
+	ok, err := mk().Evaluate(cand("mage"))
+	require.NoError(t, err)
+	assert.True(t, ok, "every chosen character is on the common opponents list")
+
+	// p2 picks rogue, which is not in the common opponents {mage, knight}.
+	ok, _ = mk().Evaluate(cand("rogue"))
 	assert.False(t, ok, "a chosen character off the common opponents list fails")
 }
 

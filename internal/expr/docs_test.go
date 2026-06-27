@@ -22,6 +22,15 @@ import (
 // Expect:  Parse returns no error and a non-nil node for each.
 func TestDocs_PropertyExpressionsParse(t *testing.T) {
 	exprs := []string{
+		// "Common matchmaking property expressions" table — the player-resolving
+		// (".players") forms. The doc's bare team fragments ("teams[red]") and the
+		// singular "team[red].players" rows are partial expressions used only to
+		// illustrate team/player identification, so the resolving forms are pinned
+		// here instead.
+		"teams[red].players",
+		"teams[red,blue].players",
+		"teams[*].players",
+
 		// "Property expression examples" table.
 		"teams[red].players[playerId]",
 		"teams[red].players.attributes[skill]",
