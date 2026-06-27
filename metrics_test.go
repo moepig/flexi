@@ -158,9 +158,12 @@ func TestMetrics_CancelledTicket(t *testing.T) {
 	})
 }
 
-// Purpose: Verify metrics report only top-level rules (a compound counts once; its child evaluations are not listed separately).
-// Method:  Form a match against a rule set whose rules are RuleA, RuleB, and a compound Both that ANDs them.
-// Expect:  Exactly the three top-level names, no duplicates.
+// Purpose: Verify metrics report only standalone top-level rules. A rule
+// referenced by a compound is evaluated only inside that compound (never on its
+// own, matching AWS FlexMatch), so it is not listed as a separate metric.
+// Method:  Form a match against a rule set whose rules are RuleA, RuleB, and a
+// compound Both that ANDs them.
+// Expect:  Only the compound "Both" appears; its children RuleA/RuleB do not.
 func TestMetrics_CompoundReportsTopLevelOnly(t *testing.T) {
 	body := `{
 	  "name": "compound",
@@ -185,7 +188,7 @@ func TestMetrics_CompoundReportsTopLevelOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, matches, 1)
 
-	assert.ElementsMatch(t, []string{"RuleA", "RuleB", "Both"},
+	assert.ElementsMatch(t, []string{"Both"},
 		metricNames(matches[0].RuleEvaluationMetrics))
 }
 

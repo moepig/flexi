@@ -751,6 +751,13 @@ func (m *Matchmaker) removeProposal(p *proposal) {
 
 // buildEvaluators constructs evaluators in two passes so that compound rules
 // can resolve references to siblings that appear later in the rule list.
+//
+// A rule that is referenced by a compound rule's statement is NOT returned as a
+// top-level evaluator: AWS FlexMatch evaluates such a rule only as part of the
+// compound that references it, never standalone. Were it enforced on its own,
+// a statement like or(A, B) would collapse to "A and B" (both would have to
+// pass independently), defeating the compound's logic. The referenced rule is
+// still built and kept in the lookup map so the compound can evaluate it.
 func buildEvaluators(rs *ruleset.RuleSet) ([]rule.Evaluator, error) {
 	others := make(map[string]rule.Evaluator, len(rs.Rules))
 	for i := range rs.Rules {
@@ -763,6 +770,7 @@ func buildEvaluators(rs *ruleset.RuleSet) ([]rule.Evaluator, error) {
 		}
 		others[rs.Rules[i].Name] = ev
 	}
+	referenced := compoundReferencedRules(rs)
 	for i := range rs.Rules {
 		if rs.Rules[i].Type != ruleset.RuleCompound {
 			continue
@@ -775,7 +783,30 @@ func buildEvaluators(rs *ruleset.RuleSet) ([]rule.Evaluator, error) {
 	}
 	out := make([]rule.Evaluator, 0, len(rs.Rules))
 	for i := range rs.Rules {
+		if _, ref := referenced[rs.Rules[i].Name]; ref {
+			continue
+		}
 		out = append(out, others[rs.Rules[i].Name])
 	}
 	return out, nil
+}
+
+// compoundReferencedRules returns the set of rule names that appear inside any
+// compound rule's statement. Statements have already been validated by
+// ruleset.Parse, so a parse failure here is treated as "no references".
+func compoundReferencedRules(rs *ruleset.RuleSet) map[string]struct{} {
+	referenced := make(map[string]struct{})
+	for i := range rs.Rules {
+		if rs.Rules[i].Type != ruleset.RuleCompound {
+			continue
+		}
+		node, err := ruleset.ParseCompound(rs.Rules[i].Statement)
+		if err != nil {
+			continue
+		}
+		for _, name := range node.RuleNames() {
+			referenced[name] = struct{}{}
+		}
+	}
+	return referenced
 }

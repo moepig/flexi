@@ -3,7 +3,9 @@
 package algorithm
 
 import (
+	"encoding/json"
 	"sort"
+	"strings"
 
 	"github.com/moepig/flexi/internal/core"
 	"github.com/moepig/flexi/internal/rule"
@@ -29,10 +31,11 @@ type Result struct {
 // of every search they participated in.
 func Build(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric) {
 	remaining := append([]core.Ticket(nil), tickets...)
+	reqs := buildTeamReqs(rs)
 	var out []Result
 	perTicket := make(map[string][]core.RuleMetric)
 	for {
-		res, used, searchMetrics, ok := formOne(rs, evals, remaining)
+		res, used, searchMetrics, ok := formOne(rs, evals, reqs, remaining)
 		for _, t := range remaining {
 			perTicket[t.ID] = mergeMetrics(perTicket[t.ID], searchMetrics)
 		}
@@ -168,7 +171,7 @@ func itoa(i int) string {
 // always returns the rule-evaluation metrics it accumulated during the search,
 // whether or not a match was formed, so callers can attribute them to the
 // tickets that participated.
-func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
+func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
 	mc := newMetricsCollector(evals)
 	if len(tickets) == 0 {
 		return Result{}, nil, mc.snapshot(), false
@@ -208,7 +211,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket)
 			}
 			slots[idx].Players = append(slots[idx].Players, t.Players...)
 			slots[idx].Parties = append(slots[idx].Parties, t.Players)
-			if rulesPassAndRecord(evals, slots, mc) {
+			if rulesPassIncremental(evals, slots, reqs, mc) {
 				used[t.ID] = struct{}{}
 				placed = true
 				break
@@ -305,6 +308,163 @@ func sharedRegion(slots []teamSlot) string {
 // evaluates every rule so that each rule's failedCount is complete; the
 // returned bool still matches "all rules passed", so match correctness is
 // unchanged.
+// teamReq records which teams a rule depends on. A rule is only meaningful once
+// the teams it reads have reached their minimum size; until then the greedy
+// builder must not let the rule reject a placement, or balance/size rules
+// (e.g. count(teams[a]) = count(teams[b])) would fail against the inevitably
+// imbalanced partial matches that occur while teams are still filling.
+type teamReq struct {
+	all   bool                // references teams[*] or a match-wide scope
+	teams map[string]struct{} // referenced team base names
+}
+
+// buildTeamReqs computes, per rule name, the teams that rule must wait for
+// before it can be enforced during incremental placement.
+//
+// Only size/count rules need to wait: a rule that measures team player counts
+// (it contains a count(...) expression, e.g. count(teams[a].players) =
+// count(teams[b].players)) inevitably fails against the imbalanced partial
+// matches the greedy builder traverses while filling teams, yet becomes
+// satisfiable once the teams are balanced. Such a rule waits for the teams it
+// references (teams[<name>] / teams[*]) to reach minPlayers. Every other rule —
+// skill distances, collection/membership constraints like a block list, and so
+// on — is monotonic (a violation is not undone by adding players) and yields a
+// zero teamReq, meaning "always ready", so its incremental behaviour is
+// unchanged. Compound rules inherit the union of their referenced rules' waits.
+func buildTeamReqs(rs *ruleset.RuleSet) map[string]teamReq {
+	reqs := make(map[string]teamReq, len(rs.Rules))
+	for i := range rs.Rules {
+		r := &rs.Rules[i]
+		if r.Type == ruleset.RuleCompound {
+			continue
+		}
+		exprs := ruleExprStrings(r)
+		if exprsContainCount(exprs) {
+			reqs[r.Name] = scanTeamRefs(exprs)
+		} else {
+			reqs[r.Name] = teamReq{teams: map[string]struct{}{}}
+		}
+	}
+	for i := range rs.Rules {
+		r := &rs.Rules[i]
+		if r.Type != ruleset.RuleCompound {
+			continue
+		}
+		req := teamReq{teams: map[string]struct{}{}}
+		if node, err := ruleset.ParseCompound(r.Statement); err == nil {
+			for _, child := range node.RuleNames() {
+				cr := reqs[child]
+				if cr.all {
+					req.all = true
+				}
+				for name := range cr.teams {
+					req.teams[name] = struct{}{}
+				}
+			}
+		}
+		reqs[r.Name] = req
+	}
+	return reqs
+}
+
+// exprsContainCount reports whether any expression counts players, which is the
+// signature of a team-size rule whose enforcement must wait for teams to fill.
+func exprsContainCount(exprs []string) bool {
+	for _, s := range exprs {
+		if strings.Contains(s, "count(") {
+			return true
+		}
+	}
+	return false
+}
+
+// ruleExprStrings collects the property-expression strings of a rule: its
+// measurements plus its referenceValue when that is a JSON string (rather than
+// a numeric literal).
+func ruleExprStrings(r *ruleset.Rule) []string {
+	out := append([]string(nil), r.Measurements...)
+	if rv := r.ReferenceValue; len(rv) > 0 {
+		var s string
+		if json.Unmarshal(rv, &s) == nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// scanTeamRefs extracts teams[<name>] and teams[*] references from expression
+// strings.
+func scanTeamRefs(exprs []string) teamReq {
+	req := teamReq{teams: map[string]struct{}{}}
+	const marker = "teams["
+	for _, s := range exprs {
+		for {
+			i := strings.Index(s, marker)
+			if i < 0 {
+				break
+			}
+			s = s[i+len(marker):]
+			j := strings.IndexByte(s, ']')
+			if j < 0 {
+				break
+			}
+			name := strings.TrimSpace(s[:j])
+			s = s[j+1:]
+			if name == "*" || name == "" {
+				req.all = true
+				continue
+			}
+			req.teams[name] = struct{}{}
+		}
+	}
+	return req
+}
+
+// ruleReady reports whether the teams a rule depends on have all reached their
+// minimum size in the current slots, so the rule can be enforced during
+// incremental placement. A zero teamReq (no dependency) is always ready.
+func ruleReady(req teamReq, slots []teamSlot) bool {
+	if req.all {
+		for _, s := range slots {
+			if len(s.Players) < s.MinPlayers {
+				return false
+			}
+		}
+	}
+	for name := range req.teams {
+		for _, s := range slots {
+			if s.BaseName == name && len(s.Players) < s.MinPlayers {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// rulesPassIncremental is the placement-time gate. Unlike rulesPassAndRecord it
+// skips rules whose referenced teams have not yet reached minPlayers, deferring
+// them to the final, complete-match evaluation. This lets the greedy builder
+// pass through the temporarily imbalanced states it must traverse while filling
+// teams, without weakening the final check (where every team is at least at its
+// minimum and all rules are therefore ready).
+func rulesPassIncremental(evals []rule.Evaluator, slots []teamSlot, reqs map[string]teamReq, mc *metricsCollector) bool {
+	cand := buildCandidate(slots, "")
+	allOK := true
+	for _, e := range evals {
+		if !ruleReady(reqs[e.Name()], slots) {
+			continue
+		}
+		ok, err := e.Evaluate(cand)
+		if err == nil && ok {
+			mc.passed[e.Name()]++
+		} else {
+			mc.failed[e.Name()]++
+			allOK = false
+		}
+	}
+	return allOK
+}
+
 func rulesPassAndRecord(evals []rule.Evaluator, slots []teamSlot, mc *metricsCollector) bool {
 	// Region is left empty so latency rules pick any satisfying region.
 	cand := buildCandidate(slots, "")
