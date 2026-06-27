@@ -113,6 +113,28 @@ func TestParseAndEval_NestedAggregation(t *testing.T) {
 	assert.Equal(t, 50.0, got)
 }
 
+// Purpose: Verify the canonical FlexMatch example avg(flatten(teams[*]...)):
+// flatten collapses the per-team grouping into one flat list of all players, so
+// the average is over every player in the match (not per team).
+// Method:  red=[10,20], blue=[40,60]; evaluate avg(flatten(teams[*].players.attributes[skill])).
+// Expect:  the scalar 32.5 — the mean of 10,20,40,60.
+func TestParseAndEval_AvgFlattenAllTeams(t *testing.T) {
+	ctx := &EvalContext{
+		TeamPlayers: map[string][]core.Player{
+			"red":  players(10, 20),
+			"blue": players(40, 60),
+		},
+		TeamOrder: []string{"red", "blue"},
+	}
+	n, err := Parse("avg(flatten(teams[*].players.attributes[skill]))")
+	require.NoError(t, err)
+	v, err := Eval(n, ctx)
+	require.NoError(t, err)
+	got, ok := v.AsNumber()
+	require.True(t, ok)
+	assert.Equal(t, 32.5, got, "mean of all four players")
+}
+
 // Purpose: Verify that set_intersection(players.modes) returns the common elements across all players' mode lists.
 // Method:  Evaluate against three players whose modes intersect only at "CTF"; sort and inspect the result.
 // Expect:  Result is KindStringList containing exactly ["CTF"].

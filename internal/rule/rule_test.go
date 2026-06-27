@@ -999,3 +999,35 @@ func TestLatency_NoSharedRegion(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, ok, "no region is reported by both players")
 }
+
+// Purpose: Verify the latency rule rejects a match when any player reports no
+// latency data at all (FlexMatch: a request that omits latency data for one or
+// more players is rejected for all matches).
+// Method:  p1 reports us-east-1 under max; p2 reports no latencies.
+// Expect:  false — the player without latency data shares no viable region.
+func TestLatency_MissingPlayerDataFails(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleLatency, MaxLatency: ptrI(100)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	pl := []core.Player{
+		{ID: "a", Latencies: map[string]int{"us-east-1": 50}},
+		{ID: "b"}, // no latency data
+	}
+	ok, err := ev.Evaluate(&Candidate{Players: pl})
+	require.NoError(t, err)
+	assert.False(t, ok, "a player without latency data fails the latency rule")
+}
+
+// Purpose: Verify a collection rule rejects a measurement that is not a string
+// list (FlexMatch: collection measurements must be string lists).
+// Method:  intersection over a numeric attribute.
+// Expect:  Evaluate returns an error.
+func TestCollection_NonStringMeasurementErrors(t *testing.T) {
+	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleCollection,
+		Measurements: []string{"players.attributes[skill]"},
+		Operation:    "intersection", MinCount: ptrI(1)}
+	ev, err := Build(r, nil)
+	require.NoError(t, err)
+	_, err = ev.Evaluate(numCand(10, 20))
+	assert.Error(t, err, "a numeric measurement is not a string set")
+}

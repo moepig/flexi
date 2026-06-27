@@ -111,6 +111,24 @@ func TestBuild_QuantityExpansion(t *testing.T) {
 	assert.Len(t, out[0].Teams["team_2"], 2)
 }
 
+// Purpose: Verify that a team with quantity omitted defaults to a single,
+// unsuffixed team (FlexMatch: quantity default is 1).
+// Method:  team{minPlayers:2, maxPlayers:2} with no quantity; two solo tickets.
+// Expect:  one match with a single team named "team" (no "team_1").
+func TestBuild_QuantityDefaultsToOne(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
+	  "teams": [{"name": "team", "minPlayers": 2, "maxPlayers": 2}]
+	}`)
+	tickets := []core.Ticket{solo("a", 1), solo("b", 2)}
+	out, _, _ := Build(rs, evals(t, rs), tickets)
+	require.Len(t, out, 1)
+	assert.Len(t, out[0].Teams["team"], 2, "single unsuffixed team")
+	_, suffixed := out[0].Teams["team_1"]
+	assert.False(t, suffixed, "quantity 1 is not suffixed")
+}
+
 // Purpose: Verify that the balanced strategy distributes players so that team attribute sums are close.
 // Method:  Call Build with skills [10, 100, 11, 99] using strategy=balanced / balancedAttribute=skill.
 // Expect:  The difference between red and blue skill totals is within 25 (high/low pairing is applied).
@@ -318,6 +336,61 @@ func TestOrderBatch_AbsoluteSort_PartyAggregation(t *testing.T) {
 	}
 	assert.Equal(t, []string{"a", "s", "p"}, mk("avg")) // party avg 50 > 40
 	assert.Equal(t, []string{"a", "p", "s"}, mk("min")) // party min 10 < 40
+}
+
+// Purpose: Verify distanceSort reduces a string_number_map attribute via mapKey
+// before computing each ticket's distance from the anchor.
+// Method:  Anchor "a" ping reduces to 50; sort ascending by distance, mapKey
+//
+//	minValue then maxValue.
+//
+// Expect:  ordering by |reduced - 50| under each mapKey.
+func TestOrderBatch_DistanceSort_MapKey(t *testing.T) {
+	mk := func(mapKey string) []string {
+		rs := newRS(t, `{
+		  "name": "x",
+		  "ruleLanguageVersion": "1.0",
+		  "playerAttributes": [{"name":"ping","type":"string_number_map"}],
+		  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+		  "rules": [{"name": "S", "type": "distanceSort",
+		    "sortDirection": "ascending", "sortAttribute": "ping", "mapKey": "`+mapKey+`"}]
+		}`)
+		tickets := []core.Ticket{
+			soloMap("a", map[string]float64{"x": 50}),
+			soloMap("b", map[string]float64{"x": 90}),
+			soloMap("c", map[string]float64{"x": 10, "y": 80}),
+			soloMap("d", map[string]float64{"x": 55}),
+		}
+		return ids(orderBatch(rs, tickets))
+	}
+	// minValue: a→50. dist b|90-50|=40, c|10-50|=40, d|55-50|=5 → d, then b,c (stable)
+	assert.Equal(t, []string{"a", "d", "b", "c"}, mk("minValue"))
+	// maxValue: a→50. dist b|90-50|=40, c|80-50|=30, d|55-50|=5 → d, c, b
+	assert.Equal(t, []string{"a", "d", "c", "b"}, mk("maxValue"))
+}
+
+// Purpose: Verify distanceSort reduces a multi-player party to a scalar via
+// partyAggregation before computing its distance from the anchor.
+// Method:  Anchor "a"=0, a party [10,90], and solo "s"=40; sort ascending by
+//
+//	distance from the anchor.
+//
+// Expect:  avg → party distance 50 (after s=40); min → party distance 10 (before s).
+func TestOrderBatch_DistanceSort_PartyAggregation(t *testing.T) {
+	mk := func(agg string) []string {
+		rs := newRS(t, `{
+		  "name": "x",
+		  "ruleLanguageVersion": "1.0",
+		  "playerAttributes": [{"name":"skill","type":"number"}],
+		  "teams": [{"name": "all", "minPlayers": 1, "maxPlayers": 4}],
+		  "rules": [{"name": "S", "type": "distanceSort",
+		    "sortDirection": "ascending", "sortAttribute": "skill", "partyAggregation": "`+agg+`"}]
+		}`)
+		tickets := []core.Ticket{solo("a", 0), party("p", 10, 90), solo("s", 40)}
+		return ids(orderBatch(rs, tickets))
+	}
+	assert.Equal(t, []string{"a", "s", "p"}, mk("avg")) // party avg 50, dist 50 > 40
+	assert.Equal(t, []string{"a", "p", "s"}, mk("min")) // party min 10, dist 10 < 40
 }
 
 // Purpose: Verify batchingPreference "sorted" applies sortByAttributes in priority

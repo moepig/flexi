@@ -78,8 +78,18 @@ func (rs *RuleSet) Validate() error {
 	if rs.Algorithm.BatchingPreference == "sorted" && len(rs.Algorithm.SortByAttributes) == 0 {
 		return fmt.Errorf("%w: batchingPreference \"sorted\" requires sortByAttributes", ErrInvalidRuleSet)
 	}
-	if rs.Algorithm.Strategy == "balanced" && rs.Algorithm.BalancedAttribute == "" {
-		return fmt.Errorf("%w: balanced strategy requires balancedAttribute", ErrInvalidRuleSet)
+	if rs.Algorithm.Strategy == "balanced" {
+		if rs.Algorithm.BalancedAttribute == "" {
+			return fmt.Errorf("%w: balanced strategy requires balancedAttribute", ErrInvalidRuleSet)
+		}
+		// balancedAttribute must reference a declared player attribute of type
+		// number (FlexMatch rule set property definitions).
+		switch t, ok := attrNames[rs.Algorithm.BalancedAttribute]; {
+		case !ok:
+			return fmt.Errorf("%w: balancedAttribute %q is not a declared playerAttribute", ErrInvalidRuleSet, rs.Algorithm.BalancedAttribute)
+		case t != "number":
+			return fmt.Errorf("%w: balancedAttribute %q must be a number attribute, got %q", ErrInvalidRuleSet, rs.Algorithm.BalancedAttribute, t)
+		}
 	}
 	switch rs.Algorithm.BackfillPriority {
 	case "", "normal", "low", "high":
