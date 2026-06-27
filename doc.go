@@ -43,9 +43,9 @@
 //     values shared by every player's collection and takes no referenceValue;
 //     "reference_intersection_count" requires each player's collection to
 //     intersect the reference value within minCount/maxCount.
-//   - batchDistance: a numeric attribute is grouped by spread (maxDistance /
-//     minDistance); a string attribute is grouped by value equivalency, and with
-//     no distance bound it requires every player to share one value.
+//   - batchDistance: a numeric attribute is grouped by spread (maxDistance); a
+//     string attribute is grouped by value equivalency, and with no maxDistance
+//     it requires every player to share one value.
 //   - maxDistance / minDistance accept either a JSON number or a string-encoded
 //     number (e.g. "500"), matching the inconsistent AWS documentation.
 //   - Time-driven expansions that loosen rule values, team sizes, or algorithm

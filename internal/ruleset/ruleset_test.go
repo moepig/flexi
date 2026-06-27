@@ -178,6 +178,8 @@ func TestParse_Errors(t *testing.T) {
 		"compound rejects batchDistance": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"bd","type":"batchDistance","batchAttribute":"skill","maxDistance":5},
 		           {"name":"c","type":"compound","statement":"not(bd)"}]}`,
+		"batchDistance rejects minDistance": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
+		  "rules":[{"name":"bd","type":"batchDistance","batchAttribute":"skill","minDistance":5}]}`,
 		"latency distanceReference needs maxDistance": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],
 		  "rules":[{"name":"l","type":"latency","maxLatency":100,"distanceReference":"min"}]}`,
 		"comparison without referenceValue needs = or !=": `{"name":"x","ruleLanguageVersion":"1.0","teams":[{"name":"r","minPlayers":1,"maxPlayers":2}],

@@ -101,6 +101,7 @@ type Rule struct {
 
 	// distance / batchDistance / latency
 	MaxDistance *float64 `json:"maxDistance,omitempty"`
+	// distance only
 	MinDistance *float64 `json:"minDistance,omitempty"`
 
 	// absoluteSort / distanceSort

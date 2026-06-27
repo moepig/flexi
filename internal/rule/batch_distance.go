@@ -11,7 +11,6 @@ type batchDistance struct {
 	name             string
 	attr             string
 	maxDist          *float64
-	minDist          *float64
 	partyAggregation string // "min", "max", "avg" (default "avg")
 }
 
@@ -24,7 +23,6 @@ func buildBatchDistance(r *ruleset.Rule) (Evaluator, error) {
 		name:             r.Name,
 		attr:             r.BatchAttribute,
 		maxDist:          r.MaxDistance,
-		minDist:          r.MinDistance,
 		partyAggregation: agg,
 	}, nil
 }
@@ -42,7 +40,7 @@ func (b *batchDistance) Evaluate(c *Candidate) (bool, error) {
 		return b.evaluateString(c.Players)
 	}
 
-	if b.maxDist == nil && b.minDist == nil {
+	if b.maxDist == nil {
 		return true, nil
 	}
 
@@ -78,10 +76,7 @@ func (b *batchDistance) Evaluate(c *Candidate) (bool, error) {
 	}
 	spread := max - min
 
-	if b.maxDist != nil && spread > *b.maxDist {
-		return false, nil
-	}
-	if b.minDist != nil && spread < *b.minDist {
+	if spread > *b.maxDist {
 		return false, nil
 	}
 	return true, nil
@@ -100,10 +95,10 @@ func (b *batchDistance) isStringMode(players []core.Player) bool {
 }
 
 // evaluateString admits a match when the number of distinct string values for
-// the batch attribute, minus one, stays within the configured bounds. When no
-// bounds are configured the rule forms batches by exact value equivalency
-// (maxDistance defaults to 0), so every player must share one value — this is
-// the FlexMatch "SameGameMode" behaviour.
+// the batch attribute, minus one, does not exceed maxDistance. With no
+// maxDistance the rule forms batches by exact value equivalency (maxDistance
+// defaults to 0), so every player must share one value — this is the FlexMatch
+// "SameGameMode" behaviour.
 func (b *batchDistance) evaluateString(players []core.Player) (bool, error) {
 	seen := make(map[string]struct{})
 	for _, p := range players {
@@ -117,15 +112,11 @@ func (b *batchDistance) evaluateString(players []core.Player) (bool, error) {
 		return true, nil
 	}
 	distance := float64(len(seen) - 1)
-	maxDist := b.maxDist
-	if maxDist == nil && b.minDist == nil {
-		zero := 0.0
-		maxDist = &zero
+	maxDist := 0.0 // no maxDistance on a string attribute means same-value batching
+	if b.maxDist != nil {
+		maxDist = *b.maxDist
 	}
-	if maxDist != nil && distance > *maxDist {
-		return false, nil
-	}
-	if b.minDist != nil && distance < *b.minDist {
+	if distance > maxDist {
 		return false, nil
 	}
 	return true, nil

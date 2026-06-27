@@ -216,6 +216,11 @@ func validateRule(r *Rule) error {
 		if r.BatchAttribute == "" {
 			return fmt.Errorf("batchDistance requires batchAttribute")
 		}
+		// FlexMatch batchDistance supports only maxDistance (plus batchAttribute
+		// and partyAggregation); minDistance is a distance-rule property.
+		if r.MinDistance != nil {
+			return fmt.Errorf("batchDistance does not support minDistance")
+		}
 		if err := validatePartyAggregation(r); err != nil {
 			return err
 		}

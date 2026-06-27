@@ -809,29 +809,21 @@ func TestDistance_MinDistance(t *testing.T) {
 	assert.False(t, ok, "diff 40 > maxDistance 30")
 }
 
-// Purpose: Verify batchDistance minDistance (lower spread bound) and the single-party
-// short-circuit (a batch of one party always passes).
-// Method:  minDistance 10 over spreads 5 and 20; then a single-party candidate.
-// Expect:  spread 5 → false; spread 20 → true; single party → true.
-func TestBatchDistance_MinDistance(t *testing.T) {
+// Purpose: Verify the batchDistance single-party short-circuit: a batch of one
+// party has no spread to measure and always passes, regardless of maxDistance.
+// (FlexMatch batchDistance supports only maxDistance — minDistance is rejected at
+// validation, exercised in the ruleset package.)
+// Method:  maxDistance 5 over a single-party candidate.
+// Expect:  single party → true.
+func TestBatchDistance_SingleParty(t *testing.T) {
 	r := &ruleset.Rule{Name: "x", Type: ruleset.RuleBatchDistance,
-		BatchAttribute: "skill", MinDistance: ptrF(10)}
+		BatchAttribute: "skill", MaxDistance: ptrF(5)}
 	ev, err := Build(r, nil)
 	require.NoError(t, err)
 
 	p1 := []core.Player{numPlayer("a", 10)}
-	p2 := []core.Player{numPlayer("b", 15)}
-	tight := &Candidate{Players: append(append([]core.Player{}, p1...), p2...), Parties: [][]core.Player{p1, p2}}
-	ok, _ := ev.Evaluate(tight)
-	assert.False(t, ok, "spread 5 < minDistance 10")
-
-	p3 := []core.Player{numPlayer("c", 30)}
-	wide := &Candidate{Players: append(append([]core.Player{}, p1...), p3...), Parties: [][]core.Player{p1, p3}}
-	ok, _ = ev.Evaluate(wide)
-	assert.True(t, ok, "spread 20 >= minDistance 10")
-
 	single := &Candidate{Players: p1, Parties: [][]core.Player{p1}}
-	ok, _ = ev.Evaluate(single)
+	ok, _ := ev.Evaluate(single)
 	assert.True(t, ok, "single party always passes")
 }
 
