@@ -3,8 +3,11 @@
 package algorithm
 
 import (
+	"cmp"
 	"encoding/json"
-	"sort"
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/moepig/flexi/internal/core"
@@ -30,18 +33,19 @@ type Result struct {
 // ended up in the match), so timed-out and cancelled tickets carry the metrics
 // of every search they participated in.
 func Build(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric) {
-	remaining := append([]core.Ticket(nil), tickets...)
+	remaining := slices.Clone(tickets)
 	reqs := buildTeamReqs(rs)
 	var out []Result
 	perTicket := make(map[string][]core.RuleMetric)
 	for {
 		res, used, searchMetrics, ok := formOne(rs, evals, reqs, remaining)
 		for _, t := range remaining {
-			perTicket[t.ID] = mergeMetrics(perTicket[t.ID], searchMetrics)
+			perTicket[t.ID] = MergeMetrics(perTicket[t.ID], searchMetrics)
 		}
 		if !ok {
 			break
 		}
+		res.RuleEvaluationMetrics = searchMetrics
 		out = append(out, res)
 		remaining = removeTickets(remaining, used)
 	}
@@ -83,9 +87,10 @@ func (mc *metricsCollector) snapshot() []core.RuleMetric {
 	return out
 }
 
-// mergeMetrics adds src's counts into dst by rule name, preserving dst's
-// existing order and appending any names not yet present. dst may be nil.
-func mergeMetrics(dst, src []core.RuleMetric) []core.RuleMetric {
+// MergeMetrics adds src's counts into dst by rule name, preserving dst's
+// existing order and appending any names not yet present. dst may be nil, in
+// which case a freshly allocated slice is returned; src is never modified.
+func MergeMetrics(dst, src []core.RuleMetric) []core.RuleMetric {
 	if len(src) == 0 {
 		return dst
 	}
@@ -132,10 +137,10 @@ func expandTeams(rs *ruleset.RuleSet) []teamSlot {
 		if q <= 0 {
 			q = 1
 		}
-		for i := 0; i < q; i++ {
+		for i := range q {
 			name := t.Name
 			if q > 1 {
-				name = t.Name + "_" + itoa(i+1)
+				name = t.Name + "_" + strconv.Itoa(i+1)
 			}
 			slots = append(slots, teamSlot{
 				Name:       name,
@@ -148,29 +153,12 @@ func expandTeams(rs *ruleset.RuleSet) []teamSlot {
 	return slots
 }
 
-func itoa(i int) string {
-	if i == 0 {
-		return "0"
-	}
-	digits := []byte{}
-	neg := i < 0
-	if neg {
-		i = -i
-	}
-	for i > 0 {
-		digits = append([]byte{byte('0' + i%10)}, digits...)
-		i /= 10
-	}
-	if neg {
-		digits = append([]byte{'-'}, digits...)
-	}
-	return string(digits)
-}
-
 // formOne attempts to build exactly one match from the head of tickets. It
 // always returns the rule-evaluation metrics it accumulated during the search,
 // whether or not a match was formed, so callers can attribute them to the
-// tickets that participated.
+// tickets that participated. That third return value is the sole source of
+// metrics: the returned Result leaves RuleEvaluationMetrics unset for Build to
+// fill in, so there is only ever one snapshot per search.
 func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
 	mc := newMetricsCollector(evals)
 	if len(tickets) == 0 {
@@ -190,9 +178,10 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	// produces an even split. Otherwise apply batchingPreference pre-sorting and
 	// any absoluteSort/distanceSort rules to order the batch.
 	if balancedAttr != "" && len(tickets) > 1 {
-		ordered := append([]core.Ticket(nil), tickets...)
-		sort.SliceStable(ordered, func(i, j int) bool {
-			return partyAttrSum(ordered[i], balancedAttr) > partyAttrSum(ordered[j], balancedAttr)
+		ordered := slices.Clone(tickets)
+		slices.SortStableFunc(ordered, func(a, b core.Ticket) int {
+			// descending: the larger sum sorts first
+			return cmp.Compare(partyAttrSum(b, balancedAttr), partyAttrSum(a, balancedAttr))
 		})
 		tickets = ordered
 	} else if len(tickets) > 1 {
@@ -211,7 +200,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 			}
 			slots[idx].Players = append(slots[idx].Players, t.Players...)
 			slots[idx].Parties = append(slots[idx].Parties, t.Players)
-			if rulesPassIncremental(evals, slots, reqs, mc) {
+			if rulesPass(evals, slots, reqs, mc) {
 				used[t.ID] = struct{}{}
 				placed = true
 				break
@@ -230,7 +219,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	if !allMinSatisfied(slots) {
 		return Result{}, nil, mc.snapshot(), false
 	}
-	if !rulesPassAndRecord(evals, slots, mc) {
+	if !rulesPass(evals, slots, nil, mc) {
 		return Result{}, nil, mc.snapshot(), false
 	}
 
@@ -238,12 +227,8 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	for _, s := range slots {
 		out.Teams[s.Name] = s.Players
 	}
-	for id := range used {
-		out.TicketIDs = append(out.TicketIDs, id)
-	}
-	sort.Strings(out.TicketIDs)
-	out.RuleEvaluationMetrics = mc.snapshot()
-	return out, used, out.RuleEvaluationMetrics, true
+	out.TicketIDs = slices.Sorted(maps.Keys(used))
+	return out, used, mc.snapshot(), true
 }
 
 func partyAttrSum(t core.Ticket, attr string) float64 {
@@ -292,22 +277,18 @@ func sharedRegion(slots []teamSlot) string {
 	if totalPlayers == 0 {
 		return ""
 	}
+	// Only a region every player reported a latency for can host the match. Map
+	// iteration order is random, so when several regions qualify pick the
+	// lexicographically smallest one to keep the result deterministic.
 	best := ""
-	bestCount := 0
 	for r, c := range regions {
-		if c == totalPlayers && c > bestCount {
-			best, bestCount = r, c
+		if c == totalPlayers && (best == "" || r < best) {
+			best = r
 		}
 	}
 	return best
 }
 
-// rulesPassAndRecord evaluates every rule against the candidate built from
-// slots, recording each pass/fail into mc, and reports whether the candidate is
-// admissible (all rules passed). Unlike a short-circuiting check it always
-// evaluates every rule so that each rule's failedCount is complete; the
-// returned bool still matches "all rules passed", so match correctness is
-// unchanged.
 // teamReq records which teams a rule depends on. A rule is only meaningful once
 // the teams it reads have reached their minimum size; until then the greedy
 // builder must not let the rule reject a placement, or balance/size rules
@@ -370,19 +351,14 @@ func buildTeamReqs(rs *ruleset.RuleSet) map[string]teamReq {
 // exprsContainCount reports whether any expression counts players, which is the
 // signature of a team-size rule whose enforcement must wait for teams to fill.
 func exprsContainCount(exprs []string) bool {
-	for _, s := range exprs {
-		if strings.Contains(s, "count(") {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(exprs, func(s string) bool { return strings.Contains(s, "count(") })
 }
 
 // ruleExprStrings collects the property-expression strings of a rule: its
 // measurements plus its referenceValue when that is a JSON string (rather than
 // a numeric literal).
 func ruleExprStrings(r *ruleset.Rule) []string {
-	out := append([]string(nil), r.Measurements...)
+	out := slices.Clone(r.Measurements)
 	if rv := r.ReferenceValue; len(rv) > 0 {
 		var s string
 		if json.Unmarshal(rv, &s) == nil {
@@ -396,20 +372,18 @@ func ruleExprStrings(r *ruleset.Rule) []string {
 // strings.
 func scanTeamRefs(exprs []string) teamReq {
 	req := teamReq{teams: map[string]struct{}{}}
-	const marker = "teams["
 	for _, s := range exprs {
 		for {
-			i := strings.Index(s, marker)
-			if i < 0 {
+			_, rest, found := strings.Cut(s, "teams[")
+			if !found {
 				break
 			}
-			s = s[i+len(marker):]
-			j := strings.IndexByte(s, ']')
-			if j < 0 {
+			name, tail, closed := strings.Cut(rest, "]")
+			if !closed {
 				break
 			}
-			name := strings.TrimSpace(s[:j])
-			s = s[j+1:]
+			s = tail
+			name = strings.TrimSpace(name)
 			if name == "*" || name == "" {
 				req.all = true
 				continue
@@ -441,35 +415,26 @@ func ruleReady(req teamReq, slots []teamSlot) bool {
 	return true
 }
 
-// rulesPassIncremental is the placement-time gate. Unlike rulesPassAndRecord it
-// skips rules whose referenced teams have not yet reached minPlayers, deferring
-// them to the final, complete-match evaluation. This lets the greedy builder
-// pass through the temporarily imbalanced states it must traverse while filling
-// teams, without weakening the final check (where every team is at least at its
-// minimum and all rules are therefore ready).
-func rulesPassIncremental(evals []rule.Evaluator, slots []teamSlot, reqs map[string]teamReq, mc *metricsCollector) bool {
-	cand := buildCandidate(slots, "")
-	allOK := true
-	for _, e := range evals {
-		if !ruleReady(reqs[e.Name()], slots) {
-			continue
-		}
-		ok, err := e.Evaluate(cand)
-		if err == nil && ok {
-			mc.passed[e.Name()]++
-		} else {
-			mc.failed[e.Name()]++
-			allOK = false
-		}
-	}
-	return allOK
-}
-
-func rulesPassAndRecord(evals []rule.Evaluator, slots []teamSlot, mc *metricsCollector) bool {
+// rulesPass evaluates every rule against the candidate built from slots,
+// recording each pass/fail into mc, and reports whether the candidate is
+// admissible (all rules passed). It never short-circuits, so each rule's
+// failedCount is complete; the returned bool still matches "all rules passed",
+// so match correctness is unchanged.
+//
+// reqs selects the mode. When non-nil this is the placement-time gate: rules
+// whose referenced teams have not yet reached minPlayers are skipped and
+// deferred to the final evaluation, which lets the greedy builder pass through
+// the temporarily imbalanced states it must traverse while filling teams. When
+// nil — the final, complete-match check, where every team is at least at its
+// minimum and all rules are therefore ready — every rule is enforced.
+func rulesPass(evals []rule.Evaluator, slots []teamSlot, reqs map[string]teamReq, mc *metricsCollector) bool {
 	// Region is left empty so latency rules pick any satisfying region.
 	cand := buildCandidate(slots, "")
 	allOK := true
 	for _, e := range evals {
+		if reqs != nil && !ruleReady(reqs[e.Name()], slots) {
+			continue
+		}
 		ok, err := e.Evaluate(cand)
 		if err == nil && ok {
 			mc.passed[e.Name()]++
@@ -528,12 +493,12 @@ func teamOrder(slots []teamSlot, t core.Ticket, balancedAttr string) []int {
 				}
 			}
 		}
-		sort.SliceStable(idx, func(a, b int) bool { return sums[idx[a]] < sums[idx[b]] })
+		slices.SortStableFunc(idx, func(a, b int) int { return cmp.Compare(sums[a], sums[b]) })
 		return idx
 	}
 	// default: prefer least-full team to spread players evenly
-	sort.SliceStable(idx, func(a, b int) bool {
-		return len(slots[idx[a]].Players) < len(slots[idx[b]].Players)
+	slices.SortStableFunc(idx, func(a, b int) int {
+		return cmp.Compare(len(slots[a].Players), len(slots[b].Players))
 	})
 	return idx
 }

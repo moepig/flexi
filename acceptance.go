@@ -2,7 +2,7 @@ package flexi
 
 import (
 	"errors"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/moepig/flexi/internal/core"
@@ -80,8 +80,7 @@ func newProposal(res matchResult, tickets []core.Ticket, now time.Time) *proposa
 		}
 		decisions[id] = m
 	}
-	ids := append([]string(nil), res.TicketIDs...)
-	sort.Strings(ids)
+	ids := slices.Sorted(slices.Values(res.TicketIDs))
 	return &proposal{
 		teams:                 res.Teams,
 		tickets:               picked,
@@ -122,17 +121,17 @@ func (p *proposal) ticketAccepted(id string) bool {
 
 // exportTickets returns a copy of the proposal's TicketIDs slice for callers.
 func (p *proposal) export() Proposal {
+	// maps.Clone would share the team slices with the proposal, so copy each
+	// one; the caller is documented to be free to mutate the result.
 	teams := make(map[string][]core.Player, len(p.teams))
 	for k, v := range p.teams {
-		cp := make([]core.Player, len(v))
-		copy(cp, v)
-		teams[k] = cp
+		teams[k] = slices.Clone(v)
 	}
 	return Proposal{
 		Teams:                 teams,
-		TicketIDs:             append([]string(nil), p.ticketIDs...),
+		TicketIDs:             slices.Clone(p.ticketIDs),
 		CreatedAt:             p.createdAt,
-		RuleEvaluationMetrics: append([]core.RuleMetric(nil), p.ruleEvaluationMetrics...),
+		RuleEvaluationMetrics: slices.Clone(p.ruleEvaluationMetrics),
 	}
 }
 

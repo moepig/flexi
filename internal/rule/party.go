@@ -1,29 +1,23 @@
 package rule
 
-import "github.com/moepig/flexi/internal/core"
+import (
+	"slices"
 
-// reduceFloat aggregates vals using agg ("min"|"max"|"avg"; default "avg").
-func reduceFloat(vals []float64, agg string) float64 {
+	"github.com/moepig/flexi/internal/core"
+)
+
+// ReduceFloat aggregates vals using agg ("min"|"max"|"avg"; default "avg").
+// It is the single implementation of FlexMatch's partyAggregation semantics,
+// shared with the algorithm package's ticket-level aggregation.
+func ReduceFloat(vals []float64, agg string) float64 {
 	if len(vals) == 0 {
 		return 0
 	}
 	switch agg {
 	case "min":
-		m := vals[0]
-		for _, v := range vals[1:] {
-			if v < m {
-				m = v
-			}
-		}
-		return m
+		return slices.Min(vals)
 	case "max":
-		m := vals[0]
-		for _, v := range vals[1:] {
-			if v > m {
-				m = v
-			}
-		}
-		return m
+		return slices.Max(vals)
 	default: // avg
 		var s float64
 		for _, v := range vals {
@@ -51,7 +45,7 @@ func aggregatePlayers(party []core.Player, agg string) core.Player {
 					vals = append(vals, pa.N)
 				}
 			}
-			out.Attributes[name] = core.Attribute{Kind: core.AttrNumber, N: reduceFloat(vals, agg)}
+			out.Attributes[name] = core.Attribute{Kind: core.AttrNumber, N: ReduceFloat(vals, agg)}
 		} else {
 			out.Attributes[name] = a
 		}
@@ -63,7 +57,7 @@ func aggregatePlayers(party []core.Player, agg string) core.Player {
 		}
 	}
 	for r, vs := range regions {
-		out.Latencies[r] = int(reduceFloat(vs, agg))
+		out.Latencies[r] = int(ReduceFloat(vs, agg))
 	}
 	return out
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -160,34 +162,35 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 	t.EnqueuedAt = m.clock.Now()
 
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, known := m.statuses[t.ID]; known {
-		m.mu.Unlock()
 		return ErrDuplicateTicket
 	}
 	if err := m.q.Enqueue(t); err != nil {
-		m.mu.Unlock()
 		return err
 	}
 	m.statuses[t.ID] = StatusQueued
-	m.mu.Unlock()
 	return nil
 }
 
+// attrKindByType maps a rule set's declared playerAttribute type to the
+// AttributeKind flexi represents it with. The rule set has already been
+// validated to use only these four types, so a lookup miss means "not a
+// declared attribute type" and is simply skipped.
+var attrKindByType = map[string]core.AttributeKind{
+	"string":            core.AttrString,
+	"number":            core.AttrNumber,
+	"string_list":       core.AttrStringList,
+	"string_number_map": core.AttrStringNumberMap,
+}
+
 // buildAttrKinds maps each declared playerAttribute name to the AttributeKind
-// implied by its declared type. Unknown type strings are skipped; the rule set
-// has already been validated to use only the four supported types.
+// implied by its declared type. Unknown type strings are skipped.
 func buildAttrKinds(rs *ruleset.RuleSet) map[string]core.AttributeKind {
 	out := make(map[string]core.AttributeKind, len(rs.PlayerAttributes))
 	for _, pa := range rs.PlayerAttributes {
-		switch pa.Type {
-		case "string":
-			out[pa.Name] = core.AttrString
-		case "number":
-			out[pa.Name] = core.AttrNumber
-		case "string_list":
-			out[pa.Name] = core.AttrStringList
-		case "string_number_map":
-			out[pa.Name] = core.AttrStringNumberMap
+		if kind, ok := attrKindByType[pa.Type]; ok {
+			out[pa.Name] = kind
 		}
 	}
 	return out
@@ -224,30 +227,25 @@ func parseDefaults(rs *ruleset.RuleSet) (map[string]core.Attribute, error) {
 		if len(pa.Default) == 0 {
 			continue
 		}
-		var a core.Attribute
-		switch pa.Type {
-		case "string":
-			a.Kind = core.AttrString
-			if err := json.Unmarshal(pa.Default, &a.S); err != nil {
-				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
-			}
-		case "number":
-			a.Kind = core.AttrNumber
-			if err := json.Unmarshal(pa.Default, &a.N); err != nil {
-				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
-			}
-		case "string_list":
-			a.Kind = core.AttrStringList
-			if err := json.Unmarshal(pa.Default, &a.SL); err != nil {
-				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
-			}
-		case "string_number_map":
-			a.Kind = core.AttrStringNumberMap
-			if err := json.Unmarshal(pa.Default, &a.SDM); err != nil {
-				return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
-			}
-		default:
+		kind, ok := attrKindByType[pa.Type]
+		if !ok {
 			continue
+		}
+		a := core.Attribute{Kind: kind}
+		// Every type decodes the same way; only the destination field differs.
+		var dst any
+		switch kind {
+		case core.AttrString:
+			dst = &a.S
+		case core.AttrNumber:
+			dst = &a.N
+		case core.AttrStringList:
+			dst = &a.SL
+		case core.AttrStringNumberMap:
+			dst = &a.SDM
+		}
+		if err := json.Unmarshal(pa.Default, dst); err != nil {
+			return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
 		}
 		out[pa.Name] = a
 	}
@@ -270,9 +268,7 @@ func (m *Matchmaker) applyDefaults(t Ticket) Ticket {
 			}
 			if attrs == nil {
 				attrs = make(core.Attributes, len(p.Attributes)+1)
-				for k, v := range p.Attributes {
-					attrs[k] = v
-				}
+				maps.Copy(attrs, p.Attributes)
 			}
 			attrs[name] = def
 		}
@@ -381,29 +377,7 @@ func (m *Matchmaker) RuleMetrics(ticketID string) ([]RuleMetric, bool) {
 	if !ok {
 		return nil, false
 	}
-	return append([]core.RuleMetric(nil), mtr...), true
-}
-
-// mergeMetrics adds src's per-rule counts into dst by rule name, preserving
-// dst's existing order and appending names not yet present. dst may be nil.
-func mergeMetrics(dst, src []core.RuleMetric) []core.RuleMetric {
-	if len(src) == 0 {
-		return dst
-	}
-	idx := make(map[string]int, len(dst))
-	for i, mtr := range dst {
-		idx[mtr.RuleName] = i
-	}
-	for _, s := range src {
-		if i, ok := idx[s.RuleName]; ok {
-			dst[i].PassedCount += s.PassedCount
-			dst[i].FailedCount += s.FailedCount
-			continue
-		}
-		idx[s.RuleName] = len(dst)
-		dst = append(dst, s)
-	}
-	return dst
+	return slices.Clone(mtr), true
 }
 
 // PendingAcceptances returns a snapshot of every proposal currently awaiting
@@ -520,11 +494,10 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 	matches := m.resolveAcceptedProposals()
 	m.expireRequests(now)
 
+	// matches is nil rather than empty when nothing resolved, so returning it
+	// directly already yields the documented nil, nil "nothing happened" result.
 	tickets := m.q.Snapshot()
 	if len(tickets) == 0 {
-		if len(matches) == 0 {
-			return nil, nil
-		}
 		return matches, nil
 	}
 
@@ -562,12 +535,9 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 	// Accumulate this tick's metrics onto every participating ticket before
 	// branching, so tickets that go on to time out or be cancelled keep them.
 	for id, mtr := range tickMetrics {
-		m.ruleMetrics[id] = mergeMetrics(m.ruleMetrics[id], mtr)
+		m.ruleMetrics[id] = algorithm.MergeMetrics(m.ruleMetrics[id], mtr)
 	}
 	if len(results) == 0 {
-		if len(matches) == 0 {
-			return nil, nil
-		}
 		return matches, nil
 	}
 
@@ -584,9 +554,6 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 				m.ticketToProposal[id] = p
 			}
 			m.q.Remove(r.TicketIDs)
-		}
-		if len(matches) == 0 {
-			return nil, nil
 		}
 		return matches, nil
 	}
@@ -614,15 +581,13 @@ func (m *Matchmaker) expireProposals(now time.Time) {
 		return
 	}
 	deadline := time.Duration(m.rs.AcceptanceTimeoutSeconds) * time.Second
-	kept := m.proposals[:0]
+	expired := func(p *proposal) bool { return now.Sub(p.createdAt) >= deadline }
 	for _, p := range m.proposals {
-		if now.Sub(p.createdAt) >= deadline {
+		if expired(p) {
 			m.failProposalTickets(p)
-			continue
 		}
-		kept = append(kept, p)
 	}
-	m.proposals = kept
+	m.proposals = slices.DeleteFunc(m.proposals, expired)
 }
 
 // expireRequests fails any queued or re-queued (SEARCHING) ticket that has been
@@ -659,24 +624,22 @@ func (m *Matchmaker) resolveAcceptedProposals() []Match {
 	if len(m.proposals) == 0 {
 		return nil
 	}
-	kept := m.proposals[:0]
 	var out []Match
 	for _, p := range m.proposals {
 		if !p.fullyAccepted() {
-			kept = append(kept, p)
 			continue
 		}
 		out = append(out, Match{
 			Teams:                 p.teams,
-			TicketIDs:             append([]string(nil), p.ticketIDs...),
-			RuleEvaluationMetrics: append([]core.RuleMetric(nil), p.ruleEvaluationMetrics...),
+			TicketIDs:             slices.Clone(p.ticketIDs),
+			RuleEvaluationMetrics: slices.Clone(p.ruleEvaluationMetrics),
 		})
 		for _, id := range p.ticketIDs {
 			m.statuses[id] = StatusPlacing
 			delete(m.ticketToProposal, id)
 		}
 	}
-	m.proposals = kept
+	m.proposals = slices.DeleteFunc(m.proposals, (*proposal).fullyAccepted)
 	return out
 }
 
@@ -740,13 +703,7 @@ func (m *Matchmaker) markProposalTickets(p *proposal, status TicketStatus) {
 // removeProposal drops p from the pending proposals slice. Callers must hold
 // m.mu.
 func (m *Matchmaker) removeProposal(p *proposal) {
-	kept := m.proposals[:0]
-	for _, q := range m.proposals {
-		if q != p {
-			kept = append(kept, q)
-		}
-	}
-	m.proposals = kept
+	m.proposals = slices.DeleteFunc(m.proposals, func(q *proposal) bool { return q == p })
 }
 
 // buildEvaluators constructs evaluators in two passes so that compound rules

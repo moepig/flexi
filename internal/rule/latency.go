@@ -72,7 +72,7 @@ func (l *latency) checkRegion(c *Candidate, region string) bool {
 	if l.distanceRef == "" || l.maxDistance == nil {
 		return true
 	}
-	ref := reduceFloat(vals, l.distanceRef) // "min" or "avg"
+	ref := ReduceFloat(vals, l.distanceRef) // "min" or "avg"
 	for _, v := range vals {
 		if v-ref > *l.maxDistance || ref-v > *l.maxDistance {
 			return false

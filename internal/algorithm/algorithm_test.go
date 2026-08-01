@@ -496,3 +496,31 @@ func TestBuild_BalancedLargeMatch(t *testing.T) {
 	blue := sumSkill(out[0].Teams["blue"])
 	assert.InDelta(t, red, blue, 25, "red=%v blue=%v", red, blue)
 }
+
+// Purpose: Verify sharedRegion picks a region every player can reach, and picks it
+// deterministically when more than one region qualifies.
+// Method:  Two players who both report latencies for "eu" and "us" plus one region
+//          only one of them reports; call sharedRegion repeatedly.
+// Expect:  Always "eu" — the lexicographically smallest fully-covering region — never
+//          the partially-covering one, despite randomized map iteration order.
+func TestSharedRegion_DeterministicAcrossFullyCoveringRegions(t *testing.T) {
+	slots := []teamSlot{{Name: "all", Players: []core.Player{
+		{ID: "p1", Latencies: map[string]int{"us": 10, "eu": 20, "ap": 30}},
+		{ID: "p2", Latencies: map[string]int{"us": 40, "eu": 50}},
+	}}}
+	for range 50 {
+		assert.Equal(t, "eu", sharedRegion(slots))
+	}
+}
+
+// Purpose: Verify sharedRegion reports no region when no single region covers every
+// player.
+// Method:  Two players with disjoint latency maps.
+// Expect:  The empty string.
+func TestSharedRegion_NoRegionCoversEveryone(t *testing.T) {
+	slots := []teamSlot{{Name: "all", Players: []core.Player{
+		{ID: "p1", Latencies: map[string]int{"us": 10}},
+		{ID: "p2", Latencies: map[string]int{"eu": 20}},
+	}}}
+	assert.Empty(t, sharedRegion(slots))
+}
