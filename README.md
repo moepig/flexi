@@ -15,13 +15,14 @@ It accepts the same JSON rule set you would pass to AWS's `CreateMatchmakingRule
 - **partyAggregation**: `min` / `max` / `avg` (and `union` / `intersection` for collection) on multi-player tickets.
 - **Compound statements**: AWS string form with `and` / `or` / `not` / `xor`, e.g. `"or(and(A,B), not(C))"`.
 - **Algorithm block**: `exhaustiveSearch` and `balanced` strategies, `batchingPreference` (`random` / `sorted` / `largestPopulation` / `fastestRegion`), `sortByAttributes`, `backfillPriority`, `expansionAgeSelection`.
+- **Backfill**: `EnqueueBackfill` fills the empty seats of a match already under way — the standalone counterpart of `StartMatchBackfill` — seating the players you report as still in the session and matching new ones around them. `backfillPriority` (`high` / `low` / `normal`) decides when matchmaking reaches for those requests.
 - **Expansions**: rule values, team sizes (`teams[Red,Blue].minPlayers`), and algorithm fields loosen automatically as tickets wait.
 - **Ticket status & player acceptance**: FlexMatch-compatible lifecycle (`QUEUED` → `REQUIRES_ACCEPTANCE` → `PLACING` → `COMPLETED`, plus `SEARCHING` / `CANCELLED` / `TIMED_OUT`) driven by `acceptanceRequired` / `acceptanceTimeoutSeconds` / `requestTimeoutSeconds` on the rule set. On a failed acceptance (reject or acceptance timeout) the tickets that did accept return to `SEARCHING` for re-matching while the rest are `CANCELLED`; `TIMED_OUT` is reserved for the request-level `requestTimeoutSeconds`, mirroring AWS.
 - **Injectable clock**: tests advance time deterministically, no `time.Sleep`.
 - **Zero external dependencies at runtime** (testify is test-only). No network or persistence.
 - **Goroutine-safe**: producers may `Enqueue` / `Cancel` / `Accept` / `Reject` while another goroutine drives `Tick`.
 
-> Backfill of in-progress matches is intentionally out of scope.
+> Automatic backfill (`BackfillMode: "AUTOMATIC"`) is out of scope — AWS itself does not offer it in standalone mode. Manual backfill is supported; see [Backfill](#backfill).
 
 ## Installation
 
@@ -318,6 +319,51 @@ complete. Tickets never involved in an evaluation report no metrics (the slice
 is nil / `RuleMetrics` returns `false`), keeping the addition backward
 compatible.
 
+## Backfill
+
+Backfill is a request to fill the empty seats of a match that is already under way, rather than to form a new one. `Matchmaker.EnqueueBackfill` is the standalone counterpart of GameLift's `StartMatchBackfill`.
+
+The request carries everyone currently in the game session, each tagged with the team they occupy. flexi seats those players first and matches new tickets around them, so the rules are evaluated over the existing roster and the candidates together and the session keeps satisfying the rule set it was formed under.
+
+```go
+err := mm.EnqueueBackfill(flexi.Ticket{
+    ID:            "backfill-1",
+    GameSessionID: "gs-1", // optional; see below
+    Players: []flexi.Player{
+        {ID: "alice", Team: "red",  Attributes: flexi.Attributes{"skill": flexi.Number(1500)}},
+        {ID: "bob",   Team: "red",  Attributes: flexi.Attributes{"skill": flexi.Number(1490)}},
+        {ID: "carol", Team: "blue", Attributes: flexi.Attributes{"skill": flexi.Number(1510)}},
+    },
+})
+```
+
+The resulting `Match` describes every seat in the session — the players already there alongside the ones joining — and lists the backfill ticket in its `TicketIDs`.
+
+### Writing the request
+
+- `Player.Team` is required on every player, and rejected on the players of a regular `Enqueue`, mirroring AWS's "do not specify team if you are not using backfill". It names a key of `Match.Teams`, so a team declared with `quantity > 1` must be given as the expanded name the player was reported under (`red_2`); the base name alone does not say which instance they are on.
+- `Player.Latencies` should carry only the region the session is running in, as AWS's `LatencyInMs` does.
+- At most 199 players may be listed, matching AWS's limit.
+- `GameSessionID` is optional and opts into FlexMatch's rule that a session has one outstanding backfill request: a new request supersedes a waiting one for the same session, which becomes `CANCELLED`. If the previous request has already been matched — awaiting acceptance, or being placed — the new one is refused with `ErrBackfillInProgress`. Leaving the field empty skips this bookkeeping.
+
+### Matchmaking behaviour
+
+A backfill request is an ordinary ticket in every other respect: it is `QUEUED`, tracked with `Matchmaker.Status`, counted by `Matchmaker.Pending`, subject to `requestTimeoutSeconds`, loosened by expansions as it waits, and withdrawn with `Matchmaker.Cancel`. Under `acceptanceRequired` it is proposed for acceptance like any other ticket, and the players already in the session must accept too — call `Accept` for them from the game server, as you would against AWS.
+
+Two constraints follow AWS: at most one backfill request takes part in any match, and a match only forms if at least one new ticket joins.
+
+`algorithm.backfillPriority` decides when matchmaking reaches for a backfill request:
+
+| Value | Behaviour |
+| --- | --- |
+| `high` | Try every backfill request, oldest first, before forming a new match. |
+| `low` | Reach for a backfill request only once no new match can be formed. |
+| `normal` (default) | No special standing: a backfill request takes part when it is the oldest ticket queued. |
+
+As in FlexMatch, the property applies to the `exhaustiveSearch` strategy only. A rule set may declare it alongside `balanced` — it is not rejected — but matchmaking then behaves as though it were unset.
+
+Automatic backfill (`BackfillMode: "AUTOMATIC"`) is out of scope. AWS does not offer it in standalone mode, and flexi knows nothing about game sessions beyond the optional identifier above.
+
 ## API at a glance
 
 Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). The most-used surface:
@@ -327,6 +373,7 @@ Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). T
 | `flexi.New(rulesetJSON, opts...)` | Parse a rule set JSON document and return a `Matchmaker`. |
 | `flexi.WithClock(c)` | Option that overrides the time source. |
 | `Matchmaker.Enqueue(t)` | Add a ticket to the queue. |
+| `Matchmaker.EnqueueBackfill(t)` | Add a request to fill the empty seats of a match in progress. |
 | `Matchmaker.Cancel(id)` | Remove a queued ticket, or dissolve a proposal it is part of. |
 | `Matchmaker.Tick()` | Expire timed-out proposals, resolve accepted ones, and form new matches. |
 | `Matchmaker.Pending()` | Count of tickets currently in `QUEUED`. |

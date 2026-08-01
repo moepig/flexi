@@ -28,12 +28,24 @@ type Player struct {
 	ID         string
 	Attributes Attributes
 	Latencies  map[string]int
+	// Team is the team the player already occupies in an in-progress match.
+	// It mirrors AWS's Player.Team, which is required on every player of a
+	// StartMatchBackfill request and must be absent on a regular one.
+	Team string
 }
 
 type Ticket struct {
 	ID         string
 	Players    []Player
 	EnqueuedAt time.Time
+	// Backfill marks a ticket that asks for new players to join an existing
+	// match rather than to form a new one. It is set by the public package's
+	// EnqueueBackfill; Players then carry the roster already in the match.
+	Backfill bool
+	// GameSessionID optionally identifies the game session a backfill ticket
+	// refills, which is the key FlexMatch uses to keep at most one outstanding
+	// backfill request per session.
+	GameSessionID string
 }
 
 type Match struct {

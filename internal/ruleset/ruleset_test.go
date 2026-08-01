@@ -247,6 +247,44 @@ func TestParse_BatchingPreferenceStrategyCompatibility(t *testing.T) {
 	}
 }
 
+// Purpose: Verify backfillPriority is accepted on every strategy. FlexMatch
+// describes it as "only used when pre-sorting with the exhaustive search
+// strategy" — the wording it also gives sortByAttributes, as against the "Valid
+// only with strategy = ..." it attaches to each batchingPreference value — so
+// the balanced strategy ignores the property rather than rejecting the rule set.
+// Method:  Parse every backfillPriority value against balanced and against
+//          exhaustiveSearch, and one value outside the enum.
+// Expect:  Every declared value parses under either strategy; only an unknown
+//          value is rejected with ErrInvalidRuleSet.
+func TestParse_BackfillPriorityAcceptedOnEveryStrategy(t *testing.T) {
+	balanced := func(priority string) string {
+		return `{"name":"x","ruleLanguageVersion":"1.0",
+		  "playerAttributes":[{"name":"skill","type":"number"}],
+		  "algorithm":{"strategy":"balanced","balancedAttribute":"skill"` + priority + `},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`
+	}
+	exhaustive := func(priority string) string {
+		return `{"name":"x","ruleLanguageVersion":"1.0",
+		  "algorithm":{"strategy":"exhaustiveSearch"` + priority + `},
+		  "teams":[{"name":"r","minPlayers":1,"maxPlayers":2}]}`
+	}
+	for _, p := range []string{`,"backfillPriority":"normal"`, `,"backfillPriority":"low"`, `,"backfillPriority":"high"`, ""} {
+		t.Run("balanced"+p, func(t *testing.T) {
+			_, err := Parse([]byte(balanced(p)))
+			assert.NoError(t, err)
+		})
+		t.Run("exhaustiveSearch"+p, func(t *testing.T) {
+			_, err := Parse([]byte(exhaustive(p)))
+			assert.NoError(t, err)
+		})
+	}
+	t.Run("unknown value rejected", func(t *testing.T) {
+		_, err := Parse([]byte(exhaustive(`,"backfillPriority":"urgent"`)))
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrInvalidRuleSet), "err: %v", err)
+	})
+}
+
 // Purpose: Verify the rule set rejects duplicate names, which FlexMatch requires
 // to be unique: team names ("A unique name for the team"), playerAttribute names
 // ("A unique name for player attribute"), and rule names ("All rules in a rule

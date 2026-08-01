@@ -804,3 +804,50 @@ func TestEndToEnd_BalancedAttributeMustBeNumber(t *testing.T) {
 	_, err = flexi.New([]byte(ok))
 	require.NoError(t, err, "a number-typed balancedAttribute is valid")
 }
+
+// Purpose: Verify algorithm.backfillPriority steers matchmaking end to end, which
+// is what a rule set author reaches for the field to do: "high" puts players into
+// a game already under way ahead of starting a new one, while the default leaves
+// backfill requests to take their turn by age.
+// Method:  Two solo tickets queue before a backfill request that could take either
+// of them, once under backfillPriority "high" and once with the field
+// omitted.
+// Expect:  "high" matches the backfill request with the older solo ticket,
+// leaving the other queued; the default forms a new match from the two
+// solo tickets and leaves the backfill request waiting.
+func TestEndToEnd_BackfillPrioritySteersMatchmaking(t *testing.T) {
+	body := func(algorithm string) []byte {
+		return []byte(`{
+		  "name": "backfill-priority",
+		  "ruleLanguageVersion": "1.0",
+		  "playerAttributes": [{"name": "skill", "type": "number"}],` + algorithm + `
+		  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}]
+		}`)
+	}
+	enqueue := func(t *testing.T, mm *flexi.Matchmaker) {
+		t.Helper()
+		require.NoError(t, mm.Enqueue(solo("t1", 10)))
+		require.NoError(t, mm.Enqueue(solo("t2", 11)))
+		require.NoError(t, mm.EnqueueBackfill(flexi.Ticket{ID: "bf", Players: []flexi.Player{
+			{ID: "seated", Team: "all", Attributes: flexi.Attributes{"skill": flexi.Number(12)}},
+		}}))
+	}
+
+	high, err := flexi.New(body(`"algorithm": {"backfillPriority": "high"},`))
+	require.NoError(t, err)
+	enqueue(t, high)
+	matches, err := high.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	assert.Equal(t, []string{"bf", "t1"}, matches[0].TicketIDs, "the session is filled before a new match starts")
+	assert.Equal(t, 1, high.Pending(), "t2 waits for another candidate")
+
+	normal, err := flexi.New(body(""))
+	require.NoError(t, err)
+	enqueue(t, normal)
+	matches, err = normal.Tick()
+	require.NoError(t, err)
+	require.Len(t, matches, 1)
+	assert.Equal(t, []string{"t1", "t2"}, matches[0].TicketIDs, "the older solo tickets form a new match")
+	assert.Equal(t, 1, normal.Pending(), "the backfill request waits its turn")
+}

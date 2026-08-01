@@ -54,8 +54,33 @@
 //     pass/fail tallies on each [Match] and [Proposal], plus cumulative
 //     per-ticket totals via [Matchmaker.RuleMetrics].
 //
-// Backfill of in-progress matches is intentionally out of scope; the
-// backfillPriority field is validated but does not change matching behaviour.
+// # Backfill
+//
+// [Matchmaker.EnqueueBackfill] fills the empty seats of a match already in
+// progress, the standalone-mode counterpart of GameLift's StartMatchBackfill.
+// The request carries everyone currently in the game session, each tagged with
+// the team they are on; those players are seated first and matchmaking fills
+// what is left, so the rules are evaluated over the existing roster and the
+// candidates together and the match keeps satisfying the rule set it was formed
+// under. The resulting [Match] describes every seat in the session.
+//
+// A backfill request is an ordinary ticket in every other respect: it is
+// tracked through [Matchmaker.Status], counted by [Matchmaker.Pending], subject
+// to requestTimeoutSeconds, withdrawn with [Matchmaker.Cancel], and — when the
+// rule set sets acceptanceRequired — proposed for acceptance by the players
+// already in the session as well as the ones joining, which a game server
+// accepts on their behalf. algorithm.backfillPriority decides when matchmaking
+// reaches for such a request: "high" before starting a new match, "low" only
+// once no new match can be formed, and the default treats it as any other
+// ticket. As in FlexMatch the property applies to the exhaustiveSearch strategy
+// only; the balanced strategy carries it but matches as though it were unset.
+//
+// Two constraints follow AWS: at most one backfill request takes part in any
+// match, and a match only forms if at least one new ticket joins. Automatic
+// backfill (BackfillMode "AUTOMATIC") is out of scope, as AWS itself does not
+// offer it in standalone mode, and flexi knows nothing about game sessions
+// beyond the optional identifier used to supersede a session's outstanding
+// request.
 //
 // # Quick start
 //

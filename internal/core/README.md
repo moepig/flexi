@@ -14,10 +14,12 @@ aliases.
 - `AttributeKind`, `Attribute`, `Attributes` — tagged-union representation
   of a FlexMatch player attribute (`string` / `number` / `string_list` /
   `string_number_map`).
-- `Player` — a participant in a `Ticket`, carrying attributes and per-region
-  latencies.
+- `Player` — a participant in a `Ticket`, carrying attributes, per-region
+  latencies, and the team the player already occupies when the ticket is a
+  backfill request.
 - `Ticket` — a matchmaking request (one or more players) plus the time it
-  was enqueued.
+  was enqueued, whether it is a backfill request, and the game session that
+  request refills.
 - `Match` — a successful pairing: team name → players, plus the IDs of the
   consumed tickets.
 - `TicketStatus` and its constants (`StatusQueued`, `StatusSearching`,

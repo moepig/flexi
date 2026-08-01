@@ -31,6 +31,16 @@ var ErrDuplicateTicket = queue.ErrDuplicateTicket
 // when no ticket with the given ID is currently tracked.
 var ErrUnknownTicket = queue.ErrUnknownTicket
 
+// ErrBackfillInProgress is returned by [Matchmaker.EnqueueBackfill] when the
+// game session already has a backfill request that has progressed past waiting
+// — it is holding a proposal awaiting acceptance, or its match is being placed
+// — and so cannot be replaced.
+var ErrBackfillInProgress = errors.New("flexi: the game session's previous backfill request is already matched")
+
+// maxBackfillPlayers caps the roster a backfill ticket may carry, mirroring the
+// limit AWS documents for StartMatchBackfill's Players parameter.
+const maxBackfillPlayers = 199
+
 // Matchmaker forms matches from in-memory tickets according to a parsed
 // FlexMatch rule set.
 //
@@ -87,6 +97,12 @@ type Matchmaker struct {
 	// are only meaningful while the ticket is in StatusSearching; stale entries
 	// are ignored by StatusReason.
 	statusReasons map[string]StatusReason
+	// backfillBySession maps a game session id to the most recent backfill
+	// ticket enqueued for it, so EnqueueBackfill can enforce FlexMatch's "one
+	// outstanding backfill request per game session" rule. Entries are not
+	// evicted when their ticket leaves the queue; EnqueueBackfill consults
+	// statuses to tell a live request from a spent one.
+	backfillBySession map[string]string
 }
 
 // Option configures a [Matchmaker] at construction time. Pass any number of
@@ -126,15 +142,16 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 		return nil, err
 	}
 	return &Matchmaker{
-		rs:               rs,
-		q:                queue.New(),
-		clock:            cfg.clock,
-		defaults:         defaults,
-		attrKinds:        buildAttrKinds(rs),
-		statuses:         make(map[string]TicketStatus),
-		ticketToProposal: make(map[string]*proposal),
-		ruleMetrics:      make(map[string][]core.RuleMetric),
-		statusReasons:    make(map[string]StatusReason),
+		rs:                rs,
+		q:                 queue.New(),
+		clock:             cfg.clock,
+		defaults:          defaults,
+		attrKinds:         buildAttrKinds(rs),
+		statuses:          make(map[string]TicketStatus),
+		ticketToProposal:  make(map[string]*proposal),
+		ruleMetrics:       make(map[string][]core.RuleMetric),
+		statusReasons:     make(map[string]StatusReason),
+		backfillBySession: make(map[string]string),
 	}, nil
 }
 
@@ -148,7 +165,67 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 //
 // Enqueue returns [ErrDuplicateTicket] (wrapped) if a ticket with the same
 // ID is already queued, in a proposal, or in a recent terminal state.
+//
+// No player may set [Player].Team: as in AWS, a team assignment belongs to a
+// backfill request, which is submitted through [Matchmaker.EnqueueBackfill].
 func (m *Matchmaker) Enqueue(t Ticket) error {
+	for _, p := range t.Players {
+		if p.Team != "" {
+			return fmt.Errorf("flexi: player %q sets Team, which only a backfill ticket may do; use EnqueueBackfill", p.ID)
+		}
+	}
+	t.Backfill = false
+	return m.enqueue(t)
+}
+
+// EnqueueBackfill adds a request to fill the empty seats of a match that is
+// already in progress, the standalone-mode equivalent of GameLift's
+// StartMatchBackfill.
+//
+// t.Players must list everyone currently in the game session — at most 199,
+// AWS's limit — each with the [Player].Team they occupy, so the engine can pick
+// new players that keep the match satisfying the rule set. Every player needs a
+// Team, and it must name a team the rule set declares;
+// a team declared with quantity > 1 must be named by the expanded form the
+// player was reported under in [Match].Teams ("red_2"), because its base name
+// alone does not say which instance the player sits on. Latency-based rule sets
+// want only the region the session is running in, as AWS's LatencyInMs does.
+//
+// The ticket then takes part in matchmaking like any other: it is [StatusQueued],
+// tracked through [Matchmaker.Status], subject to requestTimeoutSeconds, and
+// resolved by [Matchmaker.Tick]. The resulting [Match] carries the existing
+// roster and the new players together — every seat in the session, as
+// FlexMatch's MatchmakingSucceeded reports it — and its TicketIDs include this
+// ticket. A match is only formed if at least one new ticket joins, at most one
+// backfill ticket takes part in any match, and when the rule set sets
+// acceptanceRequired the players already in the session must accept too; a game
+// server that accepts on their behalf reproduces the AWS arrangement.
+//
+// Setting t.GameSessionID opts into FlexMatch's rule that a game session has at
+// most one outstanding backfill request: a new request supersedes a previous one
+// for the same session that is still waiting ([StatusQueued] or
+// [StatusSearching]), which moves to [StatusCancelled]. If the previous request
+// has already produced a match the caller is acting on — it awaits acceptance
+// or is being placed — the new request is refused with [ErrBackfillInProgress]
+// instead. Leaving GameSessionID empty skips this bookkeeping entirely, and
+// concurrent backfill requests are then the caller's to police.
+//
+// Errors otherwise match [Matchmaker.Enqueue].
+func (m *Matchmaker) EnqueueBackfill(t Ticket) error {
+	if len(t.Players) > maxBackfillPlayers {
+		return fmt.Errorf("flexi: backfill ticket carries %d players, more than the %d AWS allows", len(t.Players), maxBackfillPlayers)
+	}
+	if err := algorithm.CheckBackfillRoster(m.rs, t.Players); err != nil {
+		return fmt.Errorf("flexi: backfill ticket: %w", err)
+	}
+	t.Backfill = true
+	return m.enqueue(t)
+}
+
+// enqueue runs the validation, defaulting, and queue insertion that regular and
+// backfill tickets share. The caller has already settled t.Backfill and checked
+// whatever depends on it.
+func (m *Matchmaker) enqueue(t Ticket) error {
 	if t.ID == "" {
 		return errors.New("flexi: ticket id is required")
 	}
@@ -166,10 +243,47 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 	if _, known := m.statuses[t.ID]; known {
 		return ErrDuplicateTicket
 	}
+	tracked := t.Backfill && t.GameSessionID != ""
+	if tracked {
+		if err := m.supersedeSessionBackfill(t.GameSessionID); err != nil {
+			return err
+		}
+	}
 	if err := m.q.Enqueue(t); err != nil {
 		return err
 	}
 	m.statuses[t.ID] = StatusQueued
+	if tracked {
+		m.backfillBySession[t.GameSessionID] = t.ID
+	}
+	return nil
+}
+
+// supersedeSessionBackfill clears the way for a new backfill request for
+// gameSessionID by cancelling the session's outstanding one, per FlexMatch's
+// rule that a later request automatically replaces an earlier one.
+//
+// Only a request that is still waiting for a match is replaced. Once the
+// previous one has produced a candidate the caller is acting on — it awaits
+// acceptance, or its match is being placed — it is left untouched and
+// ErrBackfillInProgress is returned rather than tearing down a proposal behind
+// the caller's back. A request that has already reached a terminal state leaves
+// nothing to replace. Callers must hold m.mu.
+func (m *Matchmaker) supersedeSessionBackfill(gameSessionID string) error {
+	prev, ok := m.backfillBySession[gameSessionID]
+	if !ok {
+		return nil
+	}
+	switch m.statuses[prev] {
+	case StatusQueued, StatusSearching:
+		if err := m.q.Cancel(prev); err != nil {
+			return err
+		}
+		m.statuses[prev] = StatusCancelled
+		delete(m.statusReasons, prev)
+	case StatusRequiresAcceptance, StatusPlacing:
+		return ErrBackfillInProgress
+	}
 	return nil
 }
 

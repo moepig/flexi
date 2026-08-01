@@ -9,6 +9,12 @@ import "github.com/moepig/flexi/internal/core"
 // name to the player's measured latency in milliseconds; it is consulted by
 // latency rules.
 //
+// Team names the team the player already sits on in the match a backfill
+// ticket refills. It mirrors AWS's Player.Team: [Matchmaker.EnqueueBackfill]
+// requires it on every player, and [Matchmaker.Enqueue] rejects any player that
+// sets it. Its value is a key of [Match].Teams, so a team declared with
+// quantity > 1 must be named by its expanded form ("red_2"), not its base name.
+//
 // Players are passed by value and may be safely re-used across tickets.
 type Player = core.Player
 
@@ -19,6 +25,12 @@ type Player = core.Player
 // ID must be unique among queued tickets. EnqueuedAt is filled in by
 // [Matchmaker.Enqueue] from the configured [Clock]; any value set by the
 // caller is overwritten.
+//
+// Backfill and GameSessionID only apply to backfill tickets. Backfill is set by
+// [Matchmaker.EnqueueBackfill] — a value supplied by the caller is overwritten,
+// so [Matchmaker.Enqueue] always produces a regular ticket. GameSessionID is
+// optional and opts the ticket into FlexMatch's "one outstanding backfill
+// request per game session" rule; see [Matchmaker.EnqueueBackfill].
 type Ticket = core.Ticket
 
 // Match is a successful pairing of tickets into a complete game.

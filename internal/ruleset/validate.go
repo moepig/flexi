@@ -91,6 +91,12 @@ func (rs *RuleSet) Validate() error {
 			return fmt.Errorf("%w: balancedAttribute %q must be a number attribute, got %q", ErrInvalidRuleSet, rs.Algorithm.BalancedAttribute, t)
 		}
 	}
+	// Every value is accepted on every strategy. FlexMatch describes
+	// backfillPriority as "only used when pre-sorting with the exhaustive search
+	// strategy" — the same wording it gives sortByAttributes, and unlike the
+	// "Valid only with strategy = ..." it attaches to each batchingPreference
+	// value. The balanced strategy therefore ignores the property rather than
+	// rejecting it; see algorithm.backfillAttempts.
 	switch rs.Algorithm.BackfillPriority {
 	case "", "normal", "low", "high":
 	default:

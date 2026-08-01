@@ -5,6 +5,8 @@ package algorithm
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strconv"
@@ -32,13 +34,20 @@ type Result struct {
 // were still in the queue at the time of that search (not only the ones that
 // ended up in the match), so timed-out and cancelled tickets carry the metrics
 // of every search they participated in.
+//
+// Tickets marked Backfill carry the roster of a match already in progress. A
+// search may seat at most one of them — FlexMatch never matches two backfill
+// tickets together — and only emits the result if at least one regular ticket
+// joined, since a backfill that admits nobody new is not a match. Which
+// backfill tickets a search reaches for, and in what order, is decided by
+// algorithm.backfillPriority; see backfillAttempts.
 func Build(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric) {
 	remaining := slices.Clone(tickets)
 	reqs := buildTeamReqs(rs)
 	var out []Result
 	perTicket := make(map[string][]core.RuleMetric)
 	for {
-		res, used, searchMetrics, ok := formOne(rs, evals, reqs, remaining)
+		res, used, searchMetrics, ok := formNext(rs, evals, reqs, remaining)
 		for _, t := range remaining {
 			perTicket[t.ID] = MergeMetrics(perTicket[t.ID], searchMetrics)
 		}
@@ -153,13 +162,87 @@ func expandTeams(rs *ruleset.RuleSet) []teamSlot {
 	return slots
 }
 
+// formNext attempts one match formation, honouring algorithm.backfillPriority
+// to decide whether — and in which order — the pool's backfill tickets are
+// offered to formOne as the roster to seat the match around. It returns the
+// metrics of every attempt it made merged together: from the queue's point of
+// view they are all one search.
+func formNext(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
+	var metrics []core.RuleMetric
+	for i, bf := range backfillAttempts(rs, tickets) {
+		res, used, m, ok := formOne(rs, evals, reqs, tickets, bf)
+		if i == 0 {
+			// Adopt the first attempt's snapshot rather than merging into nil, so
+			// a search that makes a single attempt reports exactly what formOne
+			// produced — including the empty-but-not-nil slice a rule set with no
+			// rules yields, which MergeMetrics would flatten to nil.
+			metrics = m
+		} else {
+			metrics = MergeMetrics(metrics, m)
+		}
+		if ok {
+			return res, used, metrics, true
+		}
+	}
+	return Result{}, nil, metrics, false
+}
+
+// backfillAttempts returns the backfill tickets a single search should try to
+// seat a match around, in the order algorithm.backfillPriority calls for. A nil
+// entry is the plain attempt that forms a new match from regular tickets alone,
+// and is the only entry when the pool holds no backfill ticket.
+//
+//   - "high" offers every backfill ticket, oldest first, before falling back to
+//     a new match, so new players are steered into games already in progress.
+//   - "low" only reaches for a backfill ticket once no new match can be formed,
+//     making backfill the last resort.
+//   - "normal" (the default) gives backfill tickets no special standing: one is
+//     offered only when it is the oldest ticket in the pool, and therefore the
+//     ticket the search would have been built around in any case.
+//
+// The balanced strategy is always treated as "normal". FlexMatch documents
+// backfillPriority as "only used when pre-sorting with the exhaustive search
+// strategy", so a priority declared alongside balanced is carried but ignored
+// rather than rejected — the same treatment sortByAttributes gets.
+func backfillAttempts(rs *ruleset.RuleSet, tickets []core.Ticket) []*core.Ticket {
+	var bf []*core.Ticket
+	for i := range tickets {
+		if tickets[i].Backfill {
+			bf = append(bf, &tickets[i])
+		}
+	}
+	if len(bf) == 0 {
+		return []*core.Ticket{nil}
+	}
+	priority := rs.Algorithm.BackfillPriority
+	if rs.Algorithm.Strategy == "balanced" {
+		priority = "normal"
+	}
+	switch priority {
+	case "high":
+		return append(bf, nil)
+	case "low":
+		return append([]*core.Ticket{nil}, bf...)
+	default:
+		if tickets[0].Backfill {
+			return []*core.Ticket{&tickets[0], nil}
+		}
+		return []*core.Ticket{nil}
+	}
+}
+
 // formOne attempts to build exactly one match from the head of tickets. It
 // always returns the rule-evaluation metrics it accumulated during the search,
 // whether or not a match was formed, so callers can attribute them to the
 // tickets that participated. That third return value is the sole source of
 // metrics: the returned Result leaves RuleEvaluationMetrics unset for Build to
 // fill in, so there is only ever one snapshot per search.
-func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
+//
+// backfill, when non-nil, is a backfill ticket whose players are seated on the
+// teams they already occupy before the search starts; the greedy loop then only
+// fills what is left over. Backfill tickets in tickets are never placed by that
+// loop, so a match holds at most the one backfill ticket named here.
+func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket, backfill *core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
 	mc := newMetricsCollector(evals)
 	if len(tickets) == 0 {
 		return Result{}, nil, mc.snapshot(), false
@@ -168,6 +251,26 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	if len(slots) == 0 {
 		return Result{}, nil, mc.snapshot(), false
 	}
+	// Only regular tickets are candidates for placement; the backfill ticket (if
+	// any) is seated separately below, and a second one may not join it.
+	regular := make([]core.Ticket, 0, len(tickets))
+	for _, t := range tickets {
+		if !t.Backfill {
+			regular = append(regular, t)
+		}
+	}
+	if len(regular) == 0 {
+		return Result{}, nil, mc.snapshot(), false
+	}
+
+	used := map[string]struct{}{}
+	if backfill != nil {
+		if !seedBackfill(slots, *backfill) {
+			return Result{}, nil, mc.snapshot(), false
+		}
+		used[backfill.ID] = struct{}{}
+	}
+
 	balancedAttr := ""
 	if rs.Algorithm.Strategy == "balanced" {
 		balancedAttr = rs.Algorithm.BalancedAttribute
@@ -177,19 +280,16 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	// attribute descending so the greedy "place into lowest-sum team" loop
 	// produces an even split. Otherwise apply batchingPreference pre-sorting and
 	// any absoluteSort/distanceSort rules to order the batch.
-	if balancedAttr != "" && len(tickets) > 1 {
-		ordered := slices.Clone(tickets)
-		slices.SortStableFunc(ordered, func(a, b core.Ticket) int {
+	if balancedAttr != "" && len(regular) > 1 {
+		slices.SortStableFunc(regular, func(a, b core.Ticket) int {
 			// descending: the larger sum sorts first
 			return cmp.Compare(partyAttrSum(b, balancedAttr), partyAttrSum(a, balancedAttr))
 		})
-		tickets = ordered
-	} else if len(tickets) > 1 {
-		tickets = orderBatch(rs, tickets)
+	} else if len(regular) > 1 {
+		regular = orderBatch(rs, regular)
 	}
 
-	used := map[string]struct{}{}
-	for _, t := range tickets {
+	for _, t := range regular {
 		// Try every team in priority order; pick the first one that accepts the
 		// whole party while keeping the ruleset satisfied.
 		order := teamOrder(slots, t, balancedAttr)
@@ -216,9 +316,24 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 		}
 	}
 
+	// A backfill match has to admit somebody: seating the roster that is already
+	// playing, and nobody else, is not a match worth returning.
+	if backfill != nil && len(used) == 1 {
+		return Result{}, nil, mc.snapshot(), false
+	}
 	if !allMinSatisfied(slots) {
 		return Result{}, nil, mc.snapshot(), false
 	}
+	// The complete-match check, enforcing every rule rather than only the ones the
+	// placement gate deemed ready.
+	//
+	// It cannot currently reject: a failed placement is reverted exactly, so these
+	// slots are the ones the last accepted placement was validated against, and
+	// reaching allMinSatisfied here means no rule was deferred at that moment. The
+	// check is kept as the invariant's guard — it is what makes "every rule holds
+	// over the finished match" a property of this function rather than of the
+	// loop's bookkeeping — so a future placement path that skips validation cannot
+	// emit an inadmissible match.
 	if !rulesPass(evals, slots, nil, mc) {
 		return Result{}, nil, mc.snapshot(), false
 	}
@@ -229,6 +344,73 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	}
 	out.TicketIDs = slices.Sorted(maps.Keys(used))
 	return out, used, mc.snapshot(), true
+}
+
+// seedBackfill seats a backfill ticket's players on the teams they already
+// occupy, reporting false if the roster does not fit the rule set's teams.
+//
+// Seating happens before any rule is evaluated, and the seated players are
+// never re-examined on their own: the match they come from is a given, and it
+// may well have been formed under expansion-loosened values that the rule set
+// no longer offers. Only the final evaluation, over the existing roster plus
+// whoever joined, decides whether the backfill is admissible.
+//
+// Each player is seated as a one-player party, since a FlexMatch backfill
+// request carries per-player data only and the original parties of the
+// in-progress match are not recoverable from it.
+func seedBackfill(slots []teamSlot, t core.Ticket) bool {
+	for _, p := range t.Players {
+		i, err := resolveTeamSlot(slots, p.Team)
+		if err != nil || len(slots[i].Players) >= slots[i].MaxPlayers {
+			return false
+		}
+		slots[i].Players = append(slots[i].Players, p)
+		slots[i].Parties = append(slots[i].Parties, []core.Player{p})
+	}
+	return true
+}
+
+// CheckBackfillRoster reports whether players can be seated as the existing
+// roster of a backfill match against rs: every player must name a team the rule
+// set declares, and no team may be asked to hold more than its maxPlayers. A
+// team that is already at maxPlayers is fine — it simply takes on nobody new.
+func CheckBackfillRoster(rs *ruleset.RuleSet, players []core.Player) error {
+	slots := expandTeams(rs)
+	counts := make([]int, len(slots))
+	for _, p := range players {
+		i, err := resolveTeamSlot(slots, p.Team)
+		if err != nil {
+			return fmt.Errorf("player %q: %w", p.ID, err)
+		}
+		counts[i]++
+		if counts[i] > slots[i].MaxPlayers {
+			return fmt.Errorf("team %q is given %d players, more than its maxPlayers of %d", slots[i].Name, counts[i], slots[i].MaxPlayers)
+		}
+	}
+	return nil
+}
+
+// resolveTeamSlot returns the index of the slot that team names, matching the
+// slot names a caller reads back from Result.Teams. A team left unexpanded keeps
+// its declared name and so resolves by it.
+//
+// Falling through to a base name means quantity expansion split that team, since
+// expandTeams only renames a team when it produces several slots for it. The
+// name therefore does not say which instance the player sits on, and is reported
+// as ambiguous rather than resolved to an arbitrary one.
+func resolveTeamSlot(slots []teamSlot, team string) (int, error) {
+	if team == "" {
+		return 0, errors.New("team is required")
+	}
+	for i, s := range slots {
+		if s.Name == team {
+			return i, nil
+		}
+	}
+	if slices.ContainsFunc(slots, func(s teamSlot) bool { return s.BaseName == team }) {
+		return 0, fmt.Errorf("team %q is declared with quantity > 1: name one of the teams it expands to, such as %q", team, team+"_1")
+	}
+	return 0, fmt.Errorf("unknown team %q", team)
 }
 
 func partyAttrSum(t core.Ticket, attr string) float64 {
