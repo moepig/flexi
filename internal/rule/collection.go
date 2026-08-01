@@ -80,26 +80,18 @@ func (c *collection) Evaluate(cand *Candidate) (bool, error) {
 func (c *collection) evalMeasure(v expr.Value, ctx *expr.EvalContext) (bool, error) {
 	switch c.op {
 	case "contains":
-		ref, err := c.refScalar(ctx)
+		n, err := c.countRef(v, ctx)
 		if err != nil {
 			return false, err
 		}
-		flat, ok := v.FlattenStrings()
-		if !ok {
-			return false, fmt.Errorf("collection %q: measurement is not a string set", c.name)
-		}
-		return c.withinBounds(countOccurrences(flat, ref)), nil
+		return c.withinBounds(n), nil
 
 	case "not_contains":
-		ref, err := c.refScalar(ctx)
+		n, err := c.countRef(v, ctx)
 		if err != nil {
 			return false, err
 		}
-		flat, ok := v.FlattenStrings()
-		if !ok {
-			return false, fmt.Errorf("collection %q: measurement is not a string set", c.name)
-		}
-		return countOccurrences(flat, ref) == 0, nil
+		return n == 0, nil
 
 	case "intersection":
 		sets, err := perPlayerSets(v)
@@ -129,6 +121,21 @@ func (c *collection) evalMeasure(v expr.Value, ctx *expr.EvalContext) (bool, err
 		return true, nil
 	}
 	return false, fmt.Errorf("collection %q: unknown operation %q", c.name, c.op)
+}
+
+// countRef flattens the measurement to a string set and counts how many of its
+// values equal the rule's scalar referenceValue. It backs both contains (which
+// bounds the count) and not_contains (which requires zero).
+func (c *collection) countRef(v expr.Value, ctx *expr.EvalContext) (int, error) {
+	ref, err := c.refScalar(ctx)
+	if err != nil {
+		return 0, err
+	}
+	flat, ok := v.FlattenStrings()
+	if !ok {
+		return 0, fmt.Errorf("collection %q: measurement is not a string set", c.name)
+	}
+	return countOccurrences(flat, ref), nil
 }
 
 // withinBounds reports whether a count satisfies the rule's minCount/maxCount.
@@ -204,7 +211,7 @@ func (c *collection) refStrings(ctx *expr.EvalContext) ([]string, error) {
 // or flatten(teams[*]...) which removes only the team level) yields one set per
 // element. A flat list of strings is treated as a single set.
 func perPlayerSets(v expr.Value) ([][]string, error) {
-	if v.Kind == expr.KindList && allLists(v.List) {
+	if v.IsListOfLists() {
 		out := make([][]string, 0, len(v.List))
 		for _, e := range v.List {
 			s, ok := e.FlattenStrings()
@@ -220,18 +227,6 @@ func perPlayerSets(v expr.Value) ([][]string, error) {
 		return nil, fmt.Errorf("measurement is not a string set")
 	}
 	return [][]string{s}, nil
-}
-
-func allLists(vs []expr.Value) bool {
-	if len(vs) == 0 {
-		return false
-	}
-	for _, e := range vs {
-		if e.Kind != expr.KindList {
-			return false
-		}
-	}
-	return true
 }
 
 // intersectAll returns the distinct values present in every set, preserving the

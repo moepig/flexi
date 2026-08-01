@@ -1,6 +1,10 @@
 package flexi
 
-import "github.com/moepig/flexi/internal/core"
+import (
+	"maps"
+
+	"github.com/moepig/flexi/internal/core"
+)
 
 // AttributeKind identifies which variant an [Attribute] holds. It mirrors the
 // four player attribute types FlexMatch supports: string, number,
@@ -53,9 +57,9 @@ func StringList(v ...string) Attribute {
 // holding a copy of v. Subsequent mutations of v will not affect the
 // returned attribute.
 func StringNumberMap(v map[string]float64) Attribute {
+	// Not maps.Clone: it propagates a nil input, and the returned attribute is
+	// documented to hold a copy — callers get a usable empty map either way.
 	cp := make(map[string]float64, len(v))
-	for k, vv := range v {
-		cp[k] = vv
-	}
+	maps.Copy(cp, v)
 	return Attribute{Kind: AttrStringNumberMap, SDM: cp}
 }

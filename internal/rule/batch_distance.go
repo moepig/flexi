@@ -2,6 +2,7 @@ package rule
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/moepig/flexi/internal/core"
 	"github.com/moepig/flexi/internal/ruleset"
@@ -65,21 +66,8 @@ func (b *batchDistance) Evaluate(c *Candidate) (bool, error) {
 		values = append(values, v)
 	}
 
-	min, max := values[0], values[0]
-	for _, v := range values[1:] {
-		if v < min {
-			min = v
-		}
-		if v > max {
-			max = v
-		}
-	}
-	spread := max - min
-
-	if spread > *b.maxDist {
-		return false, nil
-	}
-	return true, nil
+	spread := slices.Max(values) - slices.Min(values)
+	return spread <= *b.maxDist, nil
 }
 
 // isStringMode reports whether the batch attribute is carried as a string by
@@ -116,10 +104,7 @@ func (b *batchDistance) evaluateString(players []core.Player) (bool, error) {
 	if b.maxDist != nil {
 		maxDist = *b.maxDist
 	}
-	if distance > maxDist {
-		return false, nil
-	}
-	return true, nil
+	return distance <= maxDist, nil
 }
 
 func (b *batchDistance) aggregateParty(players []core.Player) (float64, error) {
@@ -134,28 +119,5 @@ func (b *batchDistance) aggregateParty(players []core.Player) (float64, error) {
 		}
 		vals = append(vals, a.N)
 	}
-	switch b.partyAggregation {
-	case "min":
-		v := vals[0]
-		for _, x := range vals[1:] {
-			if x < v {
-				v = x
-			}
-		}
-		return v, nil
-	case "max":
-		v := vals[0]
-		for _, x := range vals[1:] {
-			if x > v {
-				v = x
-			}
-		}
-		return v, nil
-	default: // "avg"
-		var sum float64
-		for _, x := range vals {
-			sum += x
-		}
-		return sum / float64(len(vals)), nil
-	}
+	return ReduceFloat(vals, b.partyAggregation), nil
 }

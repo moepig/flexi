@@ -30,7 +30,9 @@ func buildComparison(r *ruleset.Rule) (Evaluator, error) {
 	c := &comparison{name: r.Name, measures: ms, ref: ref, op: r.Operation, partyAgg: r.PartyAggregation}
 	if ref.Node == nil {
 		// "Compare across players" form: FlexMatch allows only = or != when no
-		// referenceValue is supplied.
+		// referenceValue is supplied. ruleset.validate enforces this too and is
+		// the authority for user-facing rule set errors; this check only guards
+		// Build against a rule value assembled in code rather than parsed.
 		if r.Operation != "=" && r.Operation != "!=" {
 			return nil, fmt.Errorf("comparison %q: referenceValue required for operation %q", r.Name, r.Operation)
 		}
@@ -85,13 +87,13 @@ func (c *comparison) evaluateAcrossPlayers(ctx *expr.EvalContext) (bool, error) 
 			return false, err
 		}
 		if nums, ok := v.FlattenNumbers(); ok {
-			if !crossCompareNum(nums, c.op) {
+			if !crossCompare(nums, c.op) {
 				return false, nil
 			}
 			continue
 		}
 		if strs, ok := v.FlattenStrings(); ok {
-			if !crossCompareStr(strs, c.op) {
+			if !crossCompare(strs, c.op) {
 				return false, nil
 			}
 			continue
@@ -101,7 +103,10 @@ func (c *comparison) evaluateAcrossPlayers(ctx *expr.EvalContext) (bool, error) 
 	return true, nil
 }
 
-func crossCompareNum(vals []float64, op string) bool {
+// crossCompare applies the "compare across players" form of a comparison rule,
+// which FlexMatch restricts to "=" (every value identical) and "!=" (every
+// value distinct).
+func crossCompare[T comparable](vals []T, op string) bool {
 	if op == "=" {
 		for _, v := range vals {
 			if v != vals[0] {
@@ -110,26 +115,7 @@ func crossCompareNum(vals []float64, op string) bool {
 		}
 		return true
 	}
-	seen := make(map[float64]struct{}, len(vals))
-	for _, v := range vals {
-		if _, dup := seen[v]; dup {
-			return false
-		}
-		seen[v] = struct{}{}
-	}
-	return true
-}
-
-func crossCompareStr(vals []string, op string) bool {
-	if op == "=" {
-		for _, v := range vals {
-			if v != vals[0] {
-				return false
-			}
-		}
-		return true
-	}
-	seen := make(map[string]struct{}, len(vals))
+	seen := make(map[T]struct{}, len(vals))
 	for _, v := range vals {
 		if _, dup := seen[v]; dup {
 			return false

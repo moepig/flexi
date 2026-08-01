@@ -3,7 +3,7 @@ package expr
 import (
 	"fmt"
 	"math"
-	"sort"
+	"slices"
 
 	"github.com/moepig/flexi/internal/core"
 )
@@ -186,7 +186,7 @@ func reduceNumbers(v Value, reduce func([]float64) Value) (Value, error) {
 	case KindNumber:
 		return reduce([]float64{v.Num}), nil
 	case KindList:
-		if isListOfLists(v) {
+		if v.IsListOfLists() {
 			out := make([]Value, len(v.List))
 			for i, e := range v.List {
 				r, err := reduceNumbers(e, reduce)
@@ -233,34 +233,21 @@ func reduceMin(nums []float64) Value {
 	if len(nums) == 0 {
 		return Value{Kind: KindNone}
 	}
-	m := nums[0]
-	for _, n := range nums[1:] {
-		if n < m {
-			m = n
-		}
-	}
-	return Number(m)
+	return Number(slices.Min(nums))
 }
 
 func reduceMax(nums []float64) Value {
 	if len(nums) == 0 {
 		return Value{Kind: KindNone}
 	}
-	m := nums[0]
-	for _, n := range nums[1:] {
-		if n > m {
-			m = n
-		}
-	}
-	return Number(m)
+	return Number(slices.Max(nums))
 }
 
 func reduceMedian(nums []float64) Value {
 	if len(nums) == 0 {
 		return Value{Kind: KindNone}
 	}
-	s := append([]float64(nil), nums...)
-	sort.Float64s(s)
+	s := slices.Sorted(slices.Values(nums))
 	n := len(s)
 	if n%2 == 1 {
 		return Number(s[n/2])
@@ -291,7 +278,7 @@ func count(v Value) Value {
 	if v.Kind != KindList {
 		return Number(1)
 	}
-	if isListOfLists(v) {
+	if v.IsListOfLists() {
 		out := make([]Value, len(v.List))
 		for i, e := range v.List {
 			out[i] = count(e)
@@ -325,7 +312,7 @@ func setIntersection(v Value) (Value, error) {
 		return Value{}, fmt.Errorf("expr: set_intersection requires a list of string lists")
 	}
 	// Per-team nesting: List<List<List<string>>> -> map over teams.
-	if len(v.List) > 0 && isListOfLists(v.List[0]) {
+	if len(v.List) > 0 && v.List[0].IsListOfLists() {
 		out := make([]Value, len(v.List))
 		for i, e := range v.List {
 			r, err := setIntersection(e)

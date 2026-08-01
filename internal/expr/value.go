@@ -140,9 +140,11 @@ func (v Value) FlattenStrings() ([]string, bool) {
 	return out, true
 }
 
-// isListOfLists reports whether v is a list whose elements are themselves
-// lists. Used to decide whether an aggregation should map over sublists.
-func isListOfLists(v Value) bool {
+// IsListOfLists reports whether v is a non-empty list whose elements are
+// themselves lists. Used to decide whether an aggregation should map over
+// sublists, and by rule evaluation to tell a per-player set of collections
+// apart from a single flat collection.
+func (v Value) IsListOfLists() bool {
 	if v.Kind != KindList {
 		return false
 	}

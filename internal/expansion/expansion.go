@@ -5,6 +5,7 @@ package expansion
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,53 +45,54 @@ func applyTarget(rs *ruleset.RuleSet, target string, value json.RawMessage) erro
 		return setAlgorithmField(&rs.Algorithm, target[len("algorithm."):], value)
 	}
 
-	open := strings.Index(target, "[")
-	closeIdx := strings.Index(target, "]")
-	if open < 0 || closeIdx < open || !strings.HasPrefix(target[closeIdx:], "].") {
+	// A component target reads "<component>[<name>,...].<field>".
+	comp, rest, ok := strings.Cut(target, "[")
+	if !ok {
 		return fmt.Errorf("expansion: invalid target %q", target)
 	}
-	comp := target[:open]
-	names := splitNames(target[open+1 : closeIdx])
-	field := target[closeIdx+2:]
+	nameList, field, ok := strings.Cut(rest, "].")
+	if !ok {
+		return fmt.Errorf("expansion: invalid target %q", target)
+	}
+	names := splitNames(nameList)
 	if len(names) == 0 {
 		return fmt.Errorf("expansion: target %q names no elements", target)
 	}
 
 	switch comp {
 	case "rules":
-		for _, name := range names {
-			found := false
-			for i := range rs.Rules {
-				if rs.Rules[i].Name == name {
-					if err := setRuleField(&rs.Rules[i], field, value); err != nil {
-						return err
-					}
-					found = true
-				}
-			}
-			if !found {
-				return fmt.Errorf("expansion: unknown rule %q in target %q", name, target)
-			}
-		}
-		return nil
+		return applyNamed(rs.Rules, names, target, "rule",
+			func(r *ruleset.Rule) string { return r.Name },
+			func(r *ruleset.Rule) error { return setRuleField(r, field, value) })
 	case "teams":
-		for _, name := range names {
-			found := false
-			for i := range rs.Teams {
-				if rs.Teams[i].Name == name {
-					if err := setTeamField(&rs.Teams[i], field, value); err != nil {
-						return err
-					}
-					found = true
-				}
-			}
-			if !found {
-				return fmt.Errorf("expansion: unknown team %q in target %q", name, target)
-			}
-		}
-		return nil
+		return applyNamed(rs.Teams, names, target, "team",
+			func(t *ruleset.Team) string { return t.Name },
+			func(t *ruleset.Team) error { return setTeamField(t, field, value) })
 	}
 	return fmt.Errorf("expansion: unsupported target %q", target)
+}
+
+// applyNamed calls set on every element of items whose name matches one of
+// names, reporting an error naming the unmatched element (as kind, e.g. "rule")
+// if any name matches nothing. Elements are addressed by index so set mutates
+// the slice in place.
+func applyNamed[T any](items []T, names []string, target, kind string, nameOf func(*T) string, set func(*T) error) error {
+	for _, name := range names {
+		found := false
+		for i := range items {
+			if nameOf(&items[i]) != name {
+				continue
+			}
+			if err := set(&items[i]); err != nil {
+				return err
+			}
+			found = true
+		}
+		if !found {
+			return fmt.Errorf("expansion: unknown %s %q in target %q", kind, name, target)
+		}
+	}
+	return nil
 }
 
 func splitNames(s string) []string {
@@ -133,7 +135,7 @@ func setRuleField(r *ruleset.Rule, field string, value json.RawMessage) error {
 	case "maxCount":
 		return jsonIntPtr(value, &r.MaxCount)
 	case "referenceValue":
-		r.ReferenceValue = append(json.RawMessage(nil), value...)
+		r.ReferenceValue = slices.Clone(value)
 		return nil
 	}
 	return fmt.Errorf("expansion: unsupported rule field %q", field)
@@ -183,43 +185,35 @@ func jsonIntPtr(value json.RawMessage, dst **int) error {
 
 func cloneRuleSet(rs *ruleset.RuleSet) *ruleset.RuleSet {
 	cp := *rs
-	cp.Teams = append([]ruleset.Team(nil), rs.Teams...)
-	cp.PlayerAttributes = append([]ruleset.PlayerAttribute(nil), rs.PlayerAttributes...)
+	cp.Teams = slices.Clone(rs.Teams)
+	cp.PlayerAttributes = slices.Clone(rs.PlayerAttributes)
 	cp.Rules = make([]ruleset.Rule, len(rs.Rules))
 	for i, r := range rs.Rules {
 		cp.Rules[i] = cloneRule(r)
 	}
-	cp.Expansions = append([]ruleset.Expansion(nil), rs.Expansions...)
+	cp.Expansions = slices.Clone(rs.Expansions)
 	return &cp
 }
 
+// cloneRule deep-copies the fields an expansion can overwrite, so applying one
+// to the copy never mutates the caller's rule set.
 func cloneRule(r ruleset.Rule) ruleset.Rule {
 	out := r
-	if r.MaxDistance != nil {
-		v := *r.MaxDistance
-		out.MaxDistance = &v
-	}
-	if r.MinDistance != nil {
-		v := *r.MinDistance
-		out.MinDistance = &v
-	}
-	if r.MaxLatency != nil {
-		v := *r.MaxLatency
-		out.MaxLatency = &v
-	}
-	if r.MinCount != nil {
-		v := *r.MinCount
-		out.MinCount = &v
-	}
-	if r.MaxCount != nil {
-		v := *r.MaxCount
-		out.MaxCount = &v
-	}
-	if r.ReferenceValue != nil {
-		out.ReferenceValue = append(json.RawMessage(nil), r.ReferenceValue...)
-	}
-	if r.Measurements != nil {
-		out.Measurements = append([]string(nil), r.Measurements...)
-	}
+	out.MaxDistance = clonePtr(r.MaxDistance)
+	out.MinDistance = clonePtr(r.MinDistance)
+	out.MaxLatency = clonePtr(r.MaxLatency)
+	out.MinCount = clonePtr(r.MinCount)
+	out.MaxCount = clonePtr(r.MaxCount)
+	out.ReferenceValue = slices.Clone(r.ReferenceValue)
+	out.Measurements = slices.Clone(r.Measurements)
 	return out
+}
+
+// clonePtr returns a pointer to a copy of *p, or nil when p is nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }

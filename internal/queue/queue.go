@@ -5,6 +5,7 @@ package queue
 
 import (
 	"errors"
+	"slices"
 	"sync"
 
 	"github.com/moepig/flexi/internal/core"
@@ -49,11 +50,8 @@ func (q *Queue) Cancel(id string) error {
 		return ErrUnknownTicket
 	}
 	delete(q.items, id)
-	for i, x := range q.order {
-		if x == id {
-			q.order = append(q.order[:i], q.order[i+1:]...)
-			break
-		}
+	if i := slices.Index(q.order, id); i >= 0 {
+		q.order = slices.Delete(q.order, i, i+1)
 	}
 	return nil
 }
@@ -76,13 +74,10 @@ func (q *Queue) Remove(ids []string) {
 	if len(gone) == 0 {
 		return
 	}
-	out := q.order[:0]
-	for _, id := range q.order {
-		if _, drop := gone[id]; !drop {
-			out = append(out, id)
-		}
-	}
-	q.order = out
+	q.order = slices.DeleteFunc(q.order, func(id string) bool {
+		_, drop := gone[id]
+		return drop
+	})
 }
 
 // Snapshot returns the tickets in enqueue order. The returned slice is a copy

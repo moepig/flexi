@@ -2,6 +2,7 @@ package rule
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/moepig/flexi/internal/ruleset"
 )
@@ -74,7 +75,7 @@ func (l *latency) checkRegion(c *Candidate, region string) bool {
 	}
 	ref := ReduceFloat(vals, l.distanceRef) // "min" or "avg"
 	for _, v := range vals {
-		if v-ref > *l.maxDistance || ref-v > *l.maxDistance {
+		if math.Abs(v-ref) > *l.maxDistance {
 			return false
 		}
 	}
