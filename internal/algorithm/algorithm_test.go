@@ -943,3 +943,67 @@ func TestBuild_BackfillAdmitsPartiesWhole(t *testing.T) {
 	assert.Equal(t, []string{"r1", "a"}, playerIDs(out[0].Teams["red"]))
 	assert.Empty(t, remaining)
 }
+
+// Purpose: Verify a party is passed over for a team it cannot fit in whole and
+// tried against the next one, rather than being split or rejected outright.
+// Method:  A two-player party against a rule set whose first team seats exactly
+// one player and whose second seats two, plus a solo ticket for the first team.
+// Expect:  The party takes the team with room; the solo ticket takes the other.
+func TestBuild_PartySkipsTeamsWithoutRoom(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
+	  "teams": [
+	    {"name": "solo", "minPlayers": 1, "maxPlayers": 1},
+	    {"name": "duo",  "minPlayers": 2, "maxPlayers": 2}
+	  ]
+	}`)
+	party := core.Ticket{ID: "party", Players: []core.Player{
+		{ID: "d1", Attributes: core.Attributes{"skill": num(10)}},
+		{ID: "d2", Attributes: core.Attributes{"skill": num(11)}},
+	}}
+	out, remaining, _ := Build(rs, evals(t, rs), []core.Ticket{party, solo("a", 12)})
+	require.Len(t, out, 1)
+	assert.Equal(t, []string{"d1", "d2"}, playerIDs(out[0].Teams["duo"]))
+	assert.Equal(t, []string{"a"}, playerIDs(out[0].Teams["solo"]))
+	assert.Empty(t, remaining)
+}
+
+// Purpose: Verify a search is abandoned when the ticket it is anchored on cannot
+// be placed at all. The match is built around the oldest ticket, so a ticket that
+// fits nowhere stops the search rather than being skipped — the tickets behind it
+// keep their place in the queue instead of matching ahead of it.
+// Method:  A three-player party at the head of the queue against teams that seat
+// two, followed by two solo tickets that would otherwise match each other.
+// Expect:  No match; every ticket stays queued.
+func TestBuild_UnplaceableAnchorAbandonsTheSearch(t *testing.T) {
+	rs := newRS(t, `{
+	  "name": "x",
+	  "ruleLanguageVersion": "1.0",
+	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}]
+	}`)
+	oversized := core.Ticket{ID: "trio", Players: []core.Player{
+		{ID: "p1"}, {ID: "p2"}, {ID: "p3"},
+	}}
+	out, remaining, _ := Build(rs, evals(t, rs), []core.Ticket{oversized, solo("a", 10), solo("b", 11)})
+	assert.Empty(t, out)
+	assert.Equal(t, []string{"trio", "a", "b"}, ids(remaining))
+}
+
+// Purpose: Verify Build tolerates a rule set that declares no teams. Parse rejects
+// one, so this only guards against a hand-built rule set reaching the algorithm.
+// Method:  Build against a zero-value rule set.
+// Expect:  No match, and the tickets are handed back untouched.
+func TestBuild_NoTeamsFormsNothing(t *testing.T) {
+	out, remaining, _ := Build(&ruleset.RuleSet{}, nil, []core.Ticket{solo("a", 10), solo("b", 11)})
+	assert.Empty(t, out)
+	assert.Equal(t, []string{"a", "b"}, ids(remaining))
+}
+
+// Purpose: Verify sharedRegion reports no region for an empty match rather than
+// dividing by a zero player count.
+// Method:  Call sharedRegion with a team holding no players.
+// Expect:  The empty string.
+func TestSharedRegion_NoPlayers(t *testing.T) {
+	assert.Empty(t, sharedRegion([]teamSlot{{Name: "all"}}))
+}
