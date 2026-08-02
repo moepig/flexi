@@ -207,6 +207,33 @@ func TestEnqueueBackfill_WithoutGameSessionIDKeepsBothRequests(t *testing.T) {
 	assert.Equal(t, 2, mm.Pending())
 }
 
+// Purpose: Verify Evict releases a spent backfill request's hold on its game
+// session without disturbing the request that currently holds the session, so
+// the one-request-per-session bookkeeping stays bounded and correct as a caller
+// sweeps terminal tickets.
+// Method:  Supersede a request for a session, evict the superseded one, then
+// enqueue a third request for the same session.
+// Expect:  The evicted request is unknown; the third still supersedes the second,
+// which moves to CANCELLED.
+func TestEvict_ReleasesSupersededBackfillWithoutFreeingTheSession(t *testing.T) {
+	mm, err := flexi.New([]byte(backfillRS))
+	require.NoError(t, err)
+
+	roster := []flexi.Player{seatedPlayer("r1", "red", 10)}
+	require.NoError(t, mm.EnqueueBackfill(flexi.Ticket{ID: "bf1", GameSessionID: "gs-1", Players: roster}))
+	require.NoError(t, mm.EnqueueBackfill(flexi.Ticket{ID: "bf2", GameSessionID: "gs-1", Players: roster}))
+
+	require.NoError(t, mm.Evict("bf1"))
+	_, err = mm.Status("bf1")
+	assert.ErrorIs(t, err, flexi.ErrUnknownTicket)
+
+	require.NoError(t, mm.EnqueueBackfill(flexi.Ticket{ID: "bf3", GameSessionID: "gs-1", Players: roster}))
+	status, err := mm.Status("bf2")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusCancelled, status)
+	assert.Equal(t, 1, mm.Pending())
+}
+
 // Purpose: Verify the end-to-end backfill flow in the simplest configuration:
 // a request naming the players already in a session is matched with a waiting
 // ticket, and the resulting match describes the whole session.

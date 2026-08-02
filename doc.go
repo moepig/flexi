@@ -116,7 +116,7 @@
 //	    // dispatch matches, log err
 //	}
 //
-// # Errors
+// # Errors and retained state
 //
 // Every failure is classifiable with errors.Is. A ticket rejected for its own
 // contents — no ID, no players, an attribute whose kind disagrees with the rule
@@ -125,6 +125,13 @@
 // answers all of them as one class of client mistake. A ticket rejected for the
 // state of the matchmaker instead reports [ErrDuplicateTicket] or
 // [ErrBackfillInProgress] and does not wrap it.
+//
+// A ticket that leaves the queue keeps its status, its cumulative rule metrics,
+// and any claim it holds on a game session's backfill slot, so a caller can
+// still read the outcome; nothing releases that state on its own.
+// [Matchmaker.Evict] discards it for a ticket that has reached a terminal
+// state, which bounds a long-running process's memory by the live queue rather
+// than by every ticket it has ever seen.
 //
 // # Time and expansions
 //

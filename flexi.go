@@ -51,6 +51,11 @@ var ErrUnknownTicket = queue.ErrUnknownTicket
 // — and so cannot be replaced.
 var ErrBackfillInProgress = errors.New("flexi: the game session's previous backfill request is already matched")
 
+// ErrTicketNotTerminal is returned by [Matchmaker.Evict] when the ticket is
+// still in matchmaking — queued, searching, or held in a proposal — and so its
+// state is not the caller's to discard.
+var ErrTicketNotTerminal = errors.New("flexi: ticket is not in a terminal state")
+
 // maxBackfillPlayers caps the roster a backfill ticket may carry, mirroring the
 // limit AWS documents for StartMatchBackfill's Players parameter.
 const maxBackfillPlayers = 199
@@ -117,6 +122,9 @@ type Matchmaker struct {
 	// evicted when their ticket leaves the queue; EnqueueBackfill consults
 	// statuses to tell a live request from a spent one.
 	backfillBySession map[string]string
+	// sessionByBackfill inverts backfillBySession so Evict can drop a spent
+	// ticket's session bookkeeping without scanning it.
+	sessionByBackfill map[string]string
 }
 
 // Option configures a [Matchmaker] at construction time. Pass any number of
@@ -166,6 +174,7 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 		ruleMetrics:       make(map[string][]core.RuleMetric),
 		statusReasons:     make(map[string]StatusReason),
 		backfillBySession: make(map[string]string),
+		sessionByBackfill: make(map[string]string),
 	}, nil
 }
 
@@ -282,6 +291,7 @@ func (m *Matchmaker) enqueue(t Ticket) error {
 	m.statuses[t.ID] = StatusQueued
 	if tracked {
 		m.backfillBySession[t.GameSessionID] = t.ID
+		m.sessionByBackfill[t.ID] = t.GameSessionID
 	}
 	return nil
 }
@@ -458,6 +468,50 @@ func (m *Matchmaker) Cancel(ticketID string) error {
 	}
 }
 
+// Evict discards every trace the matchmaker keeps of ticketID once it is spent:
+// its status, its cumulative rule metrics, its status reason, and the claim it
+// holds on its game session's outstanding-backfill slot. Terminal state is
+// otherwise retained indefinitely — no elapsed time or later [Matchmaker.Tick]
+// releases it — so a long-lived caller evicts each ticket after reporting its
+// outcome to keep memory bounded by the live queue rather than by every ticket
+// the process has ever seen.
+//
+// Only a ticket in a terminal state may be evicted: [StatusCancelled],
+// [StatusTimedOut], [StatusPlacing], [StatusCompleted], or [StatusFailed]. One
+// still in matchmaking — queued, searching, or held in a proposal — is left
+// untouched and reported with [ErrTicketNotTerminal]; withdraw it with
+// [Matchmaker.Cancel] first. An id that is not tracked, including one already
+// evicted, returns [ErrUnknownTicket].
+//
+// The id afterwards is unknown to [Matchmaker.Status],
+// [Matchmaker.StatusReason], [Matchmaker.RuleMetrics], and
+// [Matchmaker.MarkCompleted] — evicting a [StatusPlacing] ticket forgoes
+// promoting it to [StatusCompleted] — and stops colliding with
+// [ErrDuplicateTicket], so it may be enqueued again.
+func (m *Matchmaker) Evict(ticketID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	status, ok := m.statuses[ticketID]
+	if !ok {
+		return ErrUnknownTicket
+	}
+	switch status {
+	case StatusQueued, StatusSearching, StatusRequiresAcceptance:
+		return ErrTicketNotTerminal
+	}
+	delete(m.statuses, ticketID)
+	delete(m.ruleMetrics, ticketID)
+	delete(m.statusReasons, ticketID)
+	if session, ok := m.sessionByBackfill[ticketID]; ok {
+		delete(m.sessionByBackfill, ticketID)
+		if m.backfillBySession[session] == ticketID {
+			delete(m.backfillBySession, session)
+		}
+	}
+	return nil
+}
+
 // Pending returns the number of tickets currently in [StatusQueued].
 // Tickets held in a proposal (StatusRequiresAcceptance) are not counted.
 func (m *Matchmaker) Pending() int { return m.q.Len() }
@@ -469,7 +523,8 @@ func (m *Matchmaker) Pending() int { return m.q.Len() }
 // Note that the matchmaker retains status for tickets past queue removal
 // only while they are in a terminal state reachable from this matchmaker
 // (CANCELLED, TIMED_OUT, PLACING, COMPLETED). Eviction of terminal state is
-// not automatic; call sites should not rely on long-term retention.
+// not automatic; release it with [Matchmaker.Evict] once the outcome has been
+// dealt with.
 func (m *Matchmaker) Status(ticketID string) (TicketStatus, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -508,7 +563,7 @@ func (m *Matchmaker) StatusReason(ticketID string) (StatusReason, bool) {
 //
 // The metrics support FlexMatch's MatchmakingTimedOut and MatchmakingCancelled
 // parity: like [Status], they are retained through terminal states (TIMED_OUT,
-// CANCELLED, PLACING, COMPLETED) and are not evicted automatically. Each entry
+// CANCELLED, PLACING, COMPLETED) until [Matchmaker.Evict] drops them. Each entry
 // is named after a top-level rule in the rule set; the returned slice is a copy
 // the caller may mutate freely.
 func (m *Matchmaker) RuleMetrics(ticketID string) ([]RuleMetric, bool) {

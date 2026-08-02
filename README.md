@@ -215,6 +215,25 @@ placement), the terminal success status `Tick` assigns is `PLACING`.
 Promote a ticket to `COMPLETED` with `MarkCompleted(id)` once your own
 placement pipeline has attached connection information.
 
+### Evicting terminal state
+
+A ticket that leaves the queue keeps its status, its cumulative rule metrics,
+and any claim it holds on a game session's backfill slot, so `Status(id)` still
+answers after the ticket is `CANCELLED`, `TIMED_OUT`, `PLACING`, or `COMPLETED`.
+Nothing releases that state on its own. A long-running process calls
+`Matchmaker.Evict(id)` once it has reported the outcome, which keeps memory
+bounded by the live queue rather than by every ticket ever submitted:
+
+```go
+mm.Evict("a")       // forgets status, metrics, and session bookkeeping
+mm.Status("a")      // ErrUnknownTicket
+mm.Enqueue(solo("a")) // the ID is free again
+```
+
+A ticket still in matchmaking (`QUEUED`, `SEARCHING`, `REQUIRES_ACCEPTANCE`) is
+refused with `ErrTicketNotTerminal`; `Cancel` it first. Evicting a `PLACING`
+ticket forgoes promoting it to `COMPLETED`.
+
 Enable the acceptance flow by setting the two standard FlexMatch fields on
 the rule set:
 
@@ -378,6 +397,7 @@ its own status codes without matching on message text.
 | `ErrDuplicateTicket` | The ticket ID is already queued, in a proposal, or in a retained terminal state. |
 | `ErrUnknownTicket` | No ticket with that ID is tracked (or it has been evicted). |
 | `ErrBackfillInProgress` | The game session's outstanding backfill request has already been matched and cannot be superseded. |
+| `ErrTicketNotTerminal` | `Evict` was called on a ticket still in matchmaking. |
 | `ErrUnknownProposal` / `ErrUnknownPlayer` | `Accept` / `Reject` named a ticket that is not in a pending proposal, or a player who is not on the ticket. |
 | `ErrTicketNotPlacing` | `MarkCompleted` was called on a ticket in any status other than `PLACING`. |
 
@@ -396,6 +416,7 @@ Full reference is on [pkg.go.dev](https://pkg.go.dev/github.com/moepig/flexi). T
 | `Matchmaker.Enqueue(t)` | Add a ticket to the queue. |
 | `Matchmaker.EnqueueBackfill(t)` | Add a request to fill the empty seats of a match in progress. |
 | `Matchmaker.Cancel(id)` | Remove a queued ticket, or dissolve a proposal it is part of. |
+| `Matchmaker.Evict(id)` | Forget a terminal ticket's retained status and metrics. |
 | `Matchmaker.Tick()` | Expire timed-out proposals, resolve accepted ones, and form new matches. |
 | `Matchmaker.Pending()` | Count of tickets currently in `QUEUED`. |
 | `Matchmaker.Status(id)` | Current `TicketStatus` for a ticket. |

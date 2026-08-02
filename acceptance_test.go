@@ -758,6 +758,68 @@ func TestCancel_AfterTerminalRejects(t *testing.T) {
 	assert.ErrorIs(t, mm.Cancel("a"), flexi.ErrUnknownTicket)
 }
 
+// Purpose: Verify Evict drops every trace of a spent ticket, so a long-running
+// caller can bound the terminal state the matchmaker would otherwise retain for
+// the life of the process.
+// Method:  Form a match so all four tickets are PLACING with rule metrics
+// recorded, then Evict one and query it through every accessor.
+// Expect:  Status, RuleMetrics, and MarkCompleted no longer know the ticket,
+// its ID is free to enqueue again, and the tickets left alone are untouched.
+func TestEvict_ForgetsTerminalTicket(t *testing.T) {
+	mm, err := flexi.New([]byte(skillRS))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	_, hadMetrics := mm.RuleMetrics("a")
+	require.True(t, hadMetrics, "the match evaluation records metrics to evict")
+
+	require.NoError(t, mm.Evict("a"))
+
+	_, err = mm.Status("a")
+	assert.ErrorIs(t, err, flexi.ErrUnknownTicket)
+	_, ok := mm.RuleMetrics("a")
+	assert.False(t, ok)
+	assert.ErrorIs(t, mm.MarkCompleted("a"), flexi.ErrUnknownTicket)
+	assert.ErrorIs(t, mm.Evict("a"), flexi.ErrUnknownTicket, "a second eviction has nothing to drop")
+	assert.NoError(t, mm.Enqueue(solo("a", 50)), "the evicted ID no longer collides")
+
+	status, err := mm.Status("b")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusPlacing, status)
+}
+
+// Purpose: Verify Evict refuses a ticket that is still in matchmaking. Its state
+// belongs to the search until the ticket leaves it, so discarding it would strand
+// a queued ticket or a proposal the players are being asked to accept.
+// Method:  Tick a quartet into a proposal, then enqueue a further ticket, and
+// attempt to Evict the proposal's ticket, the QUEUED one, and an ID the
+// matchmaker has never seen.
+// Expect:  ErrTicketNotTerminal for the first two with their status unchanged,
+// and ErrUnknownTicket for the third.
+func TestEvict_RejectsTicketStillInMatchmaking(t *testing.T) {
+	mm, err := flexi.New([]byte(acceptRS))
+	require.NoError(t, err)
+	enqueueQuartet(t, mm)
+	_, err = mm.Tick()
+	require.NoError(t, err)
+	require.Len(t, mm.PendingAcceptances(), 1)
+	require.NoError(t, mm.Enqueue(solo("q", 50)))
+
+	assert.ErrorIs(t, mm.Evict("a"), flexi.ErrTicketNotTerminal)
+	status, err := mm.Status("a")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusRequiresAcceptance, status)
+
+	assert.ErrorIs(t, mm.Evict("q"), flexi.ErrTicketNotTerminal)
+	status, err = mm.Status("q")
+	require.NoError(t, err)
+	assert.Equal(t, flexi.StatusQueued, status)
+	assert.Equal(t, 1, mm.Pending())
+
+	assert.ErrorIs(t, mm.Evict("nope"), flexi.ErrUnknownTicket)
+}
+
 // Purpose: Verify that MarkCompleted on an unknown ticket ID returns an error.
 // Method:  Call MarkCompleted("nope") on a Matchmaker with no enqueued tickets.
 // Expect:  ErrUnknownTicket is returned.
