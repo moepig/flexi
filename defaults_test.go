@@ -104,6 +104,7 @@ func TestEnqueue_RejectsAttributeTypeMismatch(t *testing.T) {
 		Attributes: Attributes{"skill": String("high")}}}}
 	err = mm.Enqueue(bad)
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidTicket)
 	_, statusErr := mm.Status("bad")
 	assert.ErrorIs(t, statusErr, ErrUnknownTicket, "rejected ticket is not enqueued")
 

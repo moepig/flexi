@@ -345,6 +345,7 @@ The resulting `Match` describes every seat in the session — the players alread
 - `Player.Latencies` should carry only the region the session is running in, as AWS's `LatencyInMs` does.
 - At most 199 players may be listed, matching AWS's limit.
 - `GameSessionID` is optional and opts into FlexMatch's rule that a session has one outstanding backfill request: a new request supersedes a waiting one for the same session, which becomes `CANCELLED`. If the previous request has already been matched — awaiting acceptance, or being placed — the new one is refused with `ErrBackfillInProgress`. Leaving the field empty skips this bookkeeping.
+- A roster that breaks any of the above is rejected with an error wrapping `ErrInvalidTicket`; see [Errors](#errors).
 
 ### Matchmaking behaviour
 
@@ -363,6 +364,26 @@ Two constraints follow AWS: at most one backfill request takes part in any match
 As in FlexMatch, the property applies to the `exhaustiveSearch` strategy only. A rule set may declare it alongside `balanced` — it is not rejected — but matchmaking then behaves as though it were unset.
 
 Automatic backfill (`BackfillMode: "AUTOMATIC"`) is out of scope. AWS does not offer it in standalone mode, and flexi knows nothing about game sessions beyond the optional identifier above.
+
+## Errors
+
+Every error the package returns is classifiable with `errors.Is`, so a caller
+fronting an API — a GameLift-compatible service, say — can map a failure onto
+its own status codes without matching on message text.
+
+| Sentinel | Returned when |
+| --- | --- |
+| `ErrInvalidRuleSet` | `New` was given rule set JSON that is malformed or fails semantic validation. |
+| `ErrInvalidTicket` | The submitted ticket is not well formed: no ID, no players, an attribute whose kind disagrees with the rule set, a `Team` that is missing, unknown, or ambiguous, a team or roster over its limit. Wrapped by **every** input-validation failure of `Enqueue` and `EnqueueBackfill`, so one check classifies them all as the caller's own mistake (`400`, not `500`). |
+| `ErrDuplicateTicket` | The ticket ID is already queued, in a proposal, or in a retained terminal state. |
+| `ErrUnknownTicket` | No ticket with that ID is tracked (or it has been evicted). |
+| `ErrBackfillInProgress` | The game session's outstanding backfill request has already been matched and cannot be superseded. |
+| `ErrUnknownProposal` / `ErrUnknownPlayer` | `Accept` / `Reject` named a ticket that is not in a pending proposal, or a player who is not on the ticket. |
+| `ErrTicketNotPlacing` | `MarkCompleted` was called on a ticket in any status other than `PLACING`. |
+
+`ErrInvalidTicket` covers the ticket's **contents**; `ErrDuplicateTicket` and
+`ErrBackfillInProgress` describe the **matchmaker's state** and deliberately do
+not wrap it, since a caller answers them differently.
 
 ## API at a glance
 

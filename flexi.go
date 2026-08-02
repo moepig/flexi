@@ -23,6 +23,20 @@ import (
 //	if errors.Is(err, flexi.ErrInvalidRuleSet) { ... }
 var ErrInvalidRuleSet = ruleset.ErrInvalidRuleSet
 
+// ErrInvalidTicket is returned by [Matchmaker.Enqueue] and
+// [Matchmaker.EnqueueBackfill] when the submitted ticket is not well formed:
+// an empty ID, no players, an attribute whose kind disagrees with the rule
+// set, a team assignment that is missing, unresolvable, or ambiguous, a team
+// or roster larger than allowed. Every such check wraps it, so a caller
+// classifies a rejected ticket as its own fault with a single [errors.Is]
+// rather than by enumerating the individual failures:
+//
+//	if errors.Is(err, flexi.ErrInvalidTicket) { ... } // 400, not 500
+//
+// A ticket rejected for the state of the matchmaker rather than its own
+// contents — [ErrDuplicateTicket], [ErrBackfillInProgress] — does not wrap it.
+var ErrInvalidTicket = errors.New("flexi: invalid ticket")
+
 // ErrDuplicateTicket is returned by [Matchmaker.Enqueue] when a ticket with
 // the same ID is already in the queue.
 var ErrDuplicateTicket = queue.ErrDuplicateTicket
@@ -161,7 +175,9 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 // The ticket's EnqueuedAt field is set from the configured [Clock]; any
 // value supplied by the caller is overwritten so that wait-time calculations
 // remain consistent. The ticket must have a non-empty ID and at least one
-// player; otherwise an error is returned and the ticket is not enqueued.
+// player, and its attributes must agree with the types the rule set declares;
+// otherwise an error wrapping [ErrInvalidTicket] is returned and the ticket is
+// not enqueued.
 //
 // Enqueue returns [ErrDuplicateTicket] (wrapped) if a ticket with the same
 // ID is already queued, in a proposal, or in a recent terminal state.
@@ -171,7 +187,7 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 func (m *Matchmaker) Enqueue(t Ticket) error {
 	for _, p := range t.Players {
 		if p.Team != "" {
-			return fmt.Errorf("flexi: player %q sets Team, which only a backfill ticket may do; use EnqueueBackfill", p.ID)
+			return invalidTicketf("player %q sets Team, which only a backfill ticket may do; use EnqueueBackfill", p.ID)
 		}
 	}
 	t.Backfill = false
@@ -210,16 +226,27 @@ func (m *Matchmaker) Enqueue(t Ticket) error {
 // instead. Leaving GameSessionID empty skips this bookkeeping entirely, and
 // concurrent backfill requests are then the caller's to police.
 //
-// Errors otherwise match [Matchmaker.Enqueue].
+// A roster that breaks any of the above — a player without a Team, a Team that
+// names no declared team or an expanded team ambiguously, a team given more
+// players than its maxPlayers, more than 199 players in all — is rejected with
+// an error wrapping [ErrInvalidTicket]. Errors otherwise match
+// [Matchmaker.Enqueue].
 func (m *Matchmaker) EnqueueBackfill(t Ticket) error {
 	if len(t.Players) > maxBackfillPlayers {
-		return fmt.Errorf("flexi: backfill ticket carries %d players, more than the %d AWS allows", len(t.Players), maxBackfillPlayers)
+		return invalidTicketf("backfill ticket carries %d players, more than the %d AWS allows", len(t.Players), maxBackfillPlayers)
 	}
 	if err := algorithm.CheckBackfillRoster(m.rs, t.Players); err != nil {
-		return fmt.Errorf("flexi: backfill ticket: %w", err)
+		return fmt.Errorf("%w: backfill ticket: %w", ErrInvalidTicket, err)
 	}
 	t.Backfill = true
 	return m.enqueue(t)
+}
+
+// invalidTicketf builds the error for a rejected ticket from a printf-style
+// description of the check that failed, wrapping [ErrInvalidTicket] so every
+// such rejection answers one errors.Is.
+func invalidTicketf(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", ErrInvalidTicket, fmt.Sprintf(format, args...))
 }
 
 // enqueue runs the validation, defaulting, and queue insertion that regular and
@@ -227,10 +254,10 @@ func (m *Matchmaker) EnqueueBackfill(t Ticket) error {
 // whatever depends on it.
 func (m *Matchmaker) enqueue(t Ticket) error {
 	if t.ID == "" {
-		return errors.New("flexi: ticket id is required")
+		return invalidTicketf("ticket id is required")
 	}
 	if len(t.Players) == 0 {
-		return errors.New("flexi: ticket must have at least one player")
+		return invalidTicketf("ticket must have at least one player")
 	}
 	if err := m.checkAttributeTypes(t); err != nil {
 		return err
@@ -325,7 +352,7 @@ func (m *Matchmaker) checkAttributeTypes(t Ticket) error {
 				continue
 			}
 			if a.Kind != want {
-				return fmt.Errorf("flexi: player %q attribute %q has kind %v, but the rule set declares %v",
+				return invalidTicketf("player %q attribute %q has kind %v, but the rule set declares %v",
 					p.ID, name, a.Kind, want)
 			}
 		}

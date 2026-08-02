@@ -50,6 +50,7 @@ func TestEnqueue_RejectsPlayerWithTeam(t *testing.T) {
 
 	err = mm.Enqueue(flexi.Ticket{ID: "t1", Players: []flexi.Player{seatedPlayer("p1", "red", 10)}})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, flexi.ErrInvalidTicket)
 	assert.Contains(t, err.Error(), "p1")
 	assert.Zero(t, mm.Pending())
 }
@@ -96,6 +97,7 @@ func TestEnqueueBackfill_ValidatesTeamAssignments(t *testing.T) {
 				return
 			}
 			require.Error(t, err)
+			assert.ErrorIs(t, err, flexi.ErrInvalidTicket)
 			assert.Contains(t, err.Error(), c.wantErr)
 		})
 	}
@@ -123,6 +125,7 @@ func TestEnqueueBackfill_RejectsRosterAboveAWSLimit(t *testing.T) {
 	}
 	err = mm.EnqueueBackfill(flexi.Ticket{ID: "too-big", Players: roster(200)})
 	require.Error(t, err)
+	assert.ErrorIs(t, err, flexi.ErrInvalidTicket)
 	assert.Contains(t, err.Error(), "199")
 
 	assert.NoError(t, mm.EnqueueBackfill(flexi.Ticket{ID: "at-limit", Players: roster(199)}))
@@ -183,6 +186,7 @@ func TestEnqueueBackfill_RefusesWhileSessionRequestIsMatched(t *testing.T) {
 
 	err = mm.EnqueueBackfill(flexi.Ticket{ID: "bf2", GameSessionID: "gs-1", Players: roster})
 	assert.True(t, errors.Is(err, flexi.ErrBackfillInProgress), "err: %v", err)
+	assert.NotErrorIs(t, err, flexi.ErrInvalidTicket, "the request is well formed; the session is busy")
 	status, err := mm.Status("bf1")
 	require.NoError(t, err)
 	assert.Equal(t, flexi.StatusRequiresAcceptance, status)

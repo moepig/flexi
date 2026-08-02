@@ -687,16 +687,40 @@ func TestAcceptance_NegativeTimeoutRejected(t *testing.T) {
 
 // Purpose: Verify Enqueue input validation: empty ID, zero players, and duplicate ID.
 // Method:  Attempt to enqueue an empty Ticket, a Ticket with no Players, and a duplicate ID in sequence.
-// Expect:  Errors containing "ticket id is required" / "at least one player" / ErrDuplicateTicket respectively.
+// Expect:  Errors containing "ticket id is required" / "at least one player" / ErrDuplicateTicket respectively,
+// the first two also wrapping ErrInvalidTicket.
 func TestEnqueue_ValidationErrors(t *testing.T) {
 	mm, err := flexi.New([]byte(skillRS))
 	require.NoError(t, err)
 
-	assert.ErrorContains(t, mm.Enqueue(flexi.Ticket{}), "ticket id is required")
-	assert.ErrorContains(t, mm.Enqueue(flexi.Ticket{ID: "x"}), "at least one player")
+	noID := mm.Enqueue(flexi.Ticket{})
+	assert.ErrorContains(t, noID, "ticket id is required")
+	assert.ErrorIs(t, noID, flexi.ErrInvalidTicket)
+	noPlayers := mm.Enqueue(flexi.Ticket{ID: "x"})
+	assert.ErrorContains(t, noPlayers, "at least one player")
+	assert.ErrorIs(t, noPlayers, flexi.ErrInvalidTicket)
 
 	require.NoError(t, mm.Enqueue(solo("a", 50)))
 	assert.ErrorIs(t, mm.Enqueue(solo("a", 50)), flexi.ErrDuplicateTicket)
+}
+
+// Purpose: Verify ErrInvalidTicket separates a ticket rejected for its own
+// contents from one rejected for the state of the matchmaker. A caller fronting
+// an API maps the former to a client error and the latter to its own handling,
+// so the two must not be confused.
+// Method:  Enqueue a malformed ticket, then a well-formed one twice.
+// Expect:  The malformed ticket wraps ErrInvalidTicket; the duplicate wraps
+// ErrDuplicateTicket and not ErrInvalidTicket.
+func TestEnqueue_DuplicateIsNotAnInvalidTicket(t *testing.T) {
+	mm, err := flexi.New([]byte(skillRS))
+	require.NoError(t, err)
+
+	assert.ErrorIs(t, mm.Enqueue(flexi.Ticket{ID: "x"}), flexi.ErrInvalidTicket)
+
+	require.NoError(t, mm.Enqueue(solo("a", 50)))
+	dup := mm.Enqueue(solo("a", 50))
+	assert.ErrorIs(t, dup, flexi.ErrDuplicateTicket)
+	assert.NotErrorIs(t, dup, flexi.ErrInvalidTicket)
 }
 
 // Purpose: Verify that re-using a cancelled ticket's ID is rejected (matching FlexMatch's "resubmit with a new ID" rule).
