@@ -128,6 +128,8 @@ matches, _ = mm.Tick()            // expansion steps with waitTimeSeconds<=60 ap
 
 ## A richer rule set example
 
+`quantity` defaults to 1 when omitted. If specified, it must be positive. Collection `minCount` and `maxCount` cannot be negative; `reference_intersection_count` requires a collection reference value.
+
 ```json
 {
   "name": "example",

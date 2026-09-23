@@ -20,15 +20,16 @@ func TestExpandedTeamNameConflicts(t *testing.T) {
 	}
 }
 
-func TestExistingAcceptedRuleFormsRemainUsable(t *testing.T) {
-	for _, body := range []string{
-		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1,"quantity":-1}]}`,
-		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"reference_intersection_count","referenceValue":"medic","minCount":1}]}`,
-		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"contains","referenceValue":"medic","minCount":-1}]}`,
-	} {
+func TestFlexMatchRuleValueShapes(t *testing.T) {
+	valid := []string{
+		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1}]}`,
+		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1,"quantity":1}]}`,
+		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"reference_intersection_count","referenceValue":["medic"],"minCount":1}]}`,
+	}
+	for _, body := range valid {
 		m, err := New([]byte(body))
 		if err != nil {
-			t.Fatalf("New: %v", err)
+			t.Fatalf("New valid rule set: %v", err)
 		}
 		if err := m.Enqueue(Ticket{ID: "t", Players: []Player{{ID: "p", Attributes: Attributes{"roles": StringList("medic")}}}}); err != nil {
 			t.Fatal(err)
@@ -36,6 +37,19 @@ func TestExistingAcceptedRuleFormsRemainUsable(t *testing.T) {
 		matches, err := m.Tick()
 		if err != nil || len(matches) != 1 {
 			t.Fatalf("matches=%d err=%v", len(matches), err)
+		}
+	}
+	invalid := []string{
+		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1,"quantity":0}]}`,
+		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1,"quantity":-1}]}`,
+		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1,"quantity":null}]}`,
+		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"reference_intersection_count","referenceValue":"medic","minCount":1}]}`,
+		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"contains","referenceValue":"medic","minCount":-1}]}`,
+	}
+	for _, body := range invalid {
+		_, err := New([]byte(body))
+		if !errors.Is(err, ErrInvalidRuleSet) {
+			t.Fatalf("expected invalid rule set: %s: %v", body, err)
 		}
 	}
 }

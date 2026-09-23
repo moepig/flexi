@@ -26,6 +26,9 @@ func (rs *RuleSet) Validate() error {
 		if t.Name == "" {
 			return fmt.Errorf("%w: teams[%d].name is required", ErrInvalidRuleSet, i)
 		}
+		if t.Quantity < 0 || (t.quantitySet && t.Quantity == 0) {
+			return fmt.Errorf("%w: team %q quantity must be positive when specified", ErrInvalidRuleSet, t.Name)
+		}
 		for _, name := range append([]string{t.Name}, ExpandedTeamNames(t)...) {
 			if owner, dup := teamNames[name]; dup && owner != i {
 				return fmt.Errorf("%w: team name %q from %q conflicts with %q", ErrInvalidRuleSet, name, t.Name, rs.Teams[owner].Name)
@@ -233,6 +236,15 @@ func validateRule(r *Rule) error {
 			return err
 		}
 	case RuleCollection:
+		if r.MinCount != nil && *r.MinCount < 0 {
+			return fmt.Errorf("collection minCount must be >= 0")
+		}
+		if r.MaxCount != nil && *r.MaxCount < 0 {
+			return fmt.Errorf("collection maxCount must be >= 0")
+		}
+		if r.MinCount != nil && r.MaxCount != nil && *r.MinCount > *r.MaxCount {
+			return fmt.Errorf("collection minCount exceeds maxCount")
+		}
 		if len(r.Measurements) == 0 {
 			return fmt.Errorf("collection requires measurements")
 		}

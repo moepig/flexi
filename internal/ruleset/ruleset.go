@@ -64,10 +64,33 @@ type Algorithm struct {
 // Team describes one team slot. Quantity > 1 means the team is created
 // multiple times in a single match.
 type Team struct {
-	Name       string `json:"name"`
-	MinPlayers int    `json:"minPlayers"`
-	MaxPlayers int    `json:"maxPlayers"`
-	Quantity   int    `json:"quantity,omitempty"`
+	Name        string `json:"name"`
+	MinPlayers  int    `json:"minPlayers"`
+	MaxPlayers  int    `json:"maxPlayers"`
+	Quantity    int    `json:"quantity,omitempty"`
+	quantitySet bool
+}
+
+func (t *Team) UnmarshalJSON(data []byte) error {
+	type alias Team
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields struct {
+		Quantity json.RawMessage `json:"quantity"`
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*t = Team(decoded)
+	if len(fields.Quantity) != 0 {
+		if bytes.Equal(bytes.TrimSpace(fields.Quantity), []byte("null")) {
+			return fmt.Errorf("quantity must be an integer")
+		}
+		t.quantitySet = true
+	}
+	return nil
 }
 
 // RuleType enumerates the FlexMatch rule kinds.

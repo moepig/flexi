@@ -33,6 +33,8 @@ consume the structures defined here.
   etc.). Exposed for tests and for callers that build a `RuleSet` by hand.
 - `ExpandedTeamNames(team)` — returns the concrete names created by `quantity`. Validation rejects collisions between concrete names and other declarations' base names.
 
+An omitted `quantity` creates one team. An explicitly supplied value must be positive; zero is distinguished from omission during JSON decoding.
+
 ## Design notes
 
 - Fields whose value type varies across rule kinds (most notably
