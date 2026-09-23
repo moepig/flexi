@@ -9,8 +9,7 @@ import (
 )
 
 // ErrUnknownProposal is returned by Accept / Reject when the ticket is not
-// part of any active proposal (either it was never proposed, or the proposal
-// has already been resolved).
+// part of an active proposal or its acceptance deadline has passed.
 var ErrUnknownProposal = errors.New("flexi: ticket is not in a pending proposal")
 
 // ErrUnknownPlayer is returned by Accept / Reject when the player id is not
@@ -22,8 +21,7 @@ var ErrUnknownPlayer = errors.New("flexi: player is not part of ticket")
 var ErrTicketNotPlacing = errors.New("flexi: ticket is not in PLACING")
 
 // Proposal describes a candidate match awaiting player acceptance. It is
-// returned by [Matchmaker.PendingAcceptances] so callers can surface the
-// pending decision to their players.
+// returned by [Matchmaker.PendingAcceptances] as an independent snapshot.
 //
 // Teams mirrors [Match.Teams] for the candidate. TicketIDs lists every
 // ticket participating in the proposal. CreatedAt is the clock time at
@@ -64,11 +62,7 @@ type proposal struct {
 	decisions map[string]map[string]playerAcceptance
 }
 
-func newProposal(res matchResult, tickets []core.Ticket, now time.Time) *proposal {
-	byID := make(map[string]core.Ticket, len(tickets))
-	for _, t := range tickets {
-		byID[t.ID] = t
-	}
+func newProposal(res matchResult, byID map[string]core.Ticket, now time.Time) *proposal {
 	picked := make([]core.Ticket, 0, len(res.TicketIDs))
 	decisions := make(map[string]map[string]playerAcceptance, len(res.TicketIDs))
 	for _, id := range res.TicketIDs {
@@ -80,7 +74,7 @@ func newProposal(res matchResult, tickets []core.Ticket, now time.Time) *proposa
 		}
 		decisions[id] = m
 	}
-	ids := slices.Sorted(slices.Values(res.TicketIDs))
+	ids := slices.Clone(res.TicketIDs)
 	return &proposal{
 		teams:                 res.Teams,
 		tickets:               picked,
@@ -125,7 +119,7 @@ func (p *proposal) export() Proposal {
 	// one; the caller is documented to be free to mutate the result.
 	teams := make(map[string][]core.Player, len(p.teams))
 	for k, v := range p.teams {
-		teams[k] = slices.Clone(v)
+		teams[k] = clonePlayers(v)
 	}
 	return Proposal{
 		Teams:                 teams,

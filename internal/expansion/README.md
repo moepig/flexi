@@ -5,37 +5,27 @@ algorithm values.
 
 ## Responsibility
 
-Given an immutable `*ruleset.RuleSet` and how long the oldest queued ticket
-has been waiting, return a deep copy whose values reflect every expansion
-step whose `waitTimeSeconds` threshold has been reached. The matchmaker
-calls this once per `Tick` so each pass evaluates against an
-appropriately-relaxed rule set, while the original rule set stays
-untouched for later ticks.
+Given an immutable `*ruleset.RuleSet` and the selected queue age, return a deep copy whose values reflect every active expansion step. The matchmaker keeps the base definition and the most recently applied step combination so repeated ticks can reuse the validated definition.
 
 ## Contents
 
-- `Apply(rs *ruleset.RuleSet, elapsed time.Duration) (*ruleset.RuleSet, error)`
-  — the only export. Walks `rs.Expansions`, picks the latest step whose
-  `waitTimeSeconds <= elapsed.Seconds()` for each target, and writes the
-  new value into a clone of `rs`.
+- `Apply(rs *ruleset.RuleSet, elapsed time.Duration) (*ruleset.RuleSet, error)` selects each target's latest active step and applies it to a clone.
+- `ValidateTarget(rs, target)` checks the referenced declaration and field before the matchmaker is constructed.
 
 ## Supported targets
 
 - `rules[<name>].<field>` for the numeric rule fields the FlexMatch
   reference declares as expansion targets:
-  `maxDistance`, `minDistance`, `maxAttributeDistance`, `maxLatency`,
+  `maxDistance`, `minDistance`, `maxLatency`,
   `minCount`, `maxCount`, plus `referenceValue` (passed through verbatim).
-- `algorithm.<field>` for `strategy`, `batchingPreference`,
-  `balancedAttribute`, `backfillPriority`.
+- `algorithm.<field>` for `strategy`, `batchingPreference`, `balancedAttribute`, `backfillPriority`, and `expansionAgeSelection`.
 
 Targets outside this set return an error so the matchmaker surfaces the
 misconfiguration instead of silently ignoring it.
 
 ## Design notes
 
-- `Apply` always returns a new `*RuleSet`; the input is never mutated. This
-  keeps `flexi.Matchmaker.Tick` safe to call concurrently with no extra
-  locking around the rule set itself.
+- `Apply` always returns a new `*RuleSet`; the input is never mutated. The matchmaker serializes cache updates under its mutex.
 - Expansion steps are assumed to be ordered by `waitTimeSeconds`
   (validated in `internal/ruleset`). The picker walks them and keeps the
   last one that qualifies.

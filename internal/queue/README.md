@@ -18,8 +18,8 @@ store.
   if the ID isn't present.
 - `Remove(ids []string)` — bulk-delete used by the matchmaker after
   forming a match. Unknown IDs are ignored.
-- `Snapshot() []core.Ticket` — copy of the queue contents in insertion
-  order; safe to mutate by the caller.
+- `Snapshot() []core.Ticket` — a new slice in insertion order. Ticket
+  contents remain owned by the queue and are read-only.
 - `Len() int` — number of pending tickets.
 
 ## Design notes

@@ -80,8 +80,8 @@ func (q *Queue) Remove(ids []string) {
 	})
 }
 
-// Snapshot returns the tickets in enqueue order. The returned slice is a copy
-// safe for the caller to mutate.
+// Returns tickets in enqueue order in a new slice. Ticket contents
+// remain owned by the queue and must be treated as read-only.
 func (q *Queue) Snapshot() []core.Ticket {
 	q.mu.Lock()
 	defer q.mu.Unlock()

@@ -4,13 +4,10 @@ package algorithm
 
 import (
 	"cmp"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
-	"strconv"
-	"strings"
 
 	"github.com/moepig/flexi/internal/core"
 	"github.com/moepig/flexi/internal/rule"
@@ -25,7 +22,7 @@ type Result struct {
 	RuleEvaluationMetrics []core.RuleMetric
 }
 
-// Build forms as many matches as possible from the given tickets, returning
+// Forms as many matches as possible from the given tickets, returning
 // each formed match, the remaining tickets in queue order, and the per-ticket
 // rule-evaluation metrics accumulated during this call.
 //
@@ -40,25 +37,34 @@ type Result struct {
 // tickets together — and only emits the result if at least one regular ticket
 // joined, since a backfill that admits nobody new is not a match. Which
 // backfill tickets a search reaches for, and in what order, is decided by
-// algorithm.backfillPriority; see backfillAttempts.
-func Build(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric) {
+// algorithm.backfillPriority; see backfillAttempts. An evaluation error
+// discards the search results and metrics from this call.
+func Build(rs *ruleset.RuleSet, set *rule.Set, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric, error) {
 	remaining := slices.Clone(tickets)
-	reqs := buildTeamReqs(rs)
+	reqs := set.Dependencies
 	var out []Result
 	perTicket := make(map[string][]core.RuleMetric)
+	var cumulative []core.RuleMetric
 	for {
-		res, used, searchMetrics, ok := formNext(rs, evals, reqs, remaining)
-		for _, t := range remaining {
-			perTicket[t.ID] = MergeMetrics(perTicket[t.ID], searchMetrics)
+		res, used, searchMetrics, ok, err := formNext(rs, set.Evaluators, reqs, remaining)
+		if err != nil {
+			return nil, nil, nil, err
 		}
+		cumulative = MergeMetrics(cumulative, searchMetrics)
 		if !ok {
+			for _, t := range remaining {
+				perTicket[t.ID] = slices.Clone(cumulative)
+			}
 			break
+		}
+		for id := range used {
+			perTicket[id] = slices.Clone(cumulative)
 		}
 		res.RuleEvaluationMetrics = searchMetrics
 		out = append(out, res)
 		remaining = removeTickets(remaining, used)
 	}
-	return out, remaining, perTicket
+	return out, remaining, perTicket, nil
 }
 
 // metricsCollector tallies per-rule pass/fail counts over a single match
@@ -142,15 +148,7 @@ type teamSlot struct {
 func expandTeams(rs *ruleset.RuleSet) []teamSlot {
 	var slots []teamSlot
 	for _, t := range rs.Teams {
-		q := t.Quantity
-		if q <= 0 {
-			q = 1
-		}
-		for i := range q {
-			name := t.Name
-			if q > 1 {
-				name = t.Name + "_" + strconv.Itoa(i+1)
-			}
+		for _, name := range ruleset.ExpandedTeamNames(t) {
 			slots = append(slots, teamSlot{
 				Name:       name,
 				BaseName:   t.Name,
@@ -167,10 +165,13 @@ func expandTeams(rs *ruleset.RuleSet) []teamSlot {
 // offered to formOne as the roster to seat the match around. It returns the
 // metrics of every attempt it made merged together: from the queue's point of
 // view they are all one search.
-func formNext(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
+func formNext(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]rule.Dependency, tickets []core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool, error) {
 	var metrics []core.RuleMetric
 	for i, bf := range backfillAttempts(rs, tickets) {
-		res, used, m, ok := formOne(rs, evals, reqs, tickets, bf)
+		res, used, m, ok, err := formOne(rs, evals, reqs, tickets, bf)
+		if err != nil {
+			return Result{}, nil, nil, false, err
+		}
 		if i == 0 {
 			// Adopt the first attempt's snapshot rather than merging into nil, so
 			// a search that makes a single attempt reports exactly what formOne
@@ -181,10 +182,10 @@ func formNext(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamR
 			metrics = MergeMetrics(metrics, m)
 		}
 		if ok {
-			return res, used, metrics, true
+			return res, used, metrics, true, nil
 		}
 	}
-	return Result{}, nil, metrics, false
+	return Result{}, nil, metrics, false, nil
 }
 
 // backfillAttempts returns the backfill tickets a single search should try to
@@ -242,14 +243,14 @@ func backfillAttempts(rs *ruleset.RuleSet, tickets []core.Ticket) []*core.Ticket
 // teams they already occupy before the search starts; the greedy loop then only
 // fills what is left over. Backfill tickets in tickets are never placed by that
 // loop, so a match holds at most the one backfill ticket named here.
-func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamReq, tickets []core.Ticket, backfill *core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool) {
+func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]rule.Dependency, tickets []core.Ticket, backfill *core.Ticket) (Result, map[string]struct{}, []core.RuleMetric, bool, error) {
 	mc := newMetricsCollector(evals)
 	if len(tickets) == 0 {
-		return Result{}, nil, mc.snapshot(), false
+		return Result{}, nil, mc.snapshot(), false, nil
 	}
 	slots := expandTeams(rs)
 	if len(slots) == 0 {
-		return Result{}, nil, mc.snapshot(), false
+		return Result{}, nil, mc.snapshot(), false, nil
 	}
 	// Only regular tickets are candidates for placement; the backfill ticket (if
 	// any) is seated separately below, and a second one may not join it.
@@ -260,13 +261,13 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 		}
 	}
 	if len(regular) == 0 {
-		return Result{}, nil, mc.snapshot(), false
+		return Result{}, nil, mc.snapshot(), false, nil
 	}
 
 	used := map[string]struct{}{}
 	if backfill != nil {
 		if !seedBackfill(slots, *backfill) {
-			return Result{}, nil, mc.snapshot(), false
+			return Result{}, nil, mc.snapshot(), false, nil
 		}
 		used[backfill.ID] = struct{}{}
 	}
@@ -300,7 +301,11 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 			}
 			slots[idx].Players = append(slots[idx].Players, t.Players...)
 			slots[idx].Parties = append(slots[idx].Parties, t.Players)
-			if rulesPass(evals, slots, reqs, mc) {
+			pass, err := rulesPass(evals, slots, reqs, mc)
+			if err != nil {
+				return Result{}, nil, nil, false, err
+			}
+			if pass {
 				used[t.ID] = struct{}{}
 				placed = true
 				break
@@ -309,7 +314,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 			slots[idx].Parties = slots[idx].Parties[:len(slots[idx].Parties)-1]
 		}
 		if !placed && len(used) == 0 {
-			return Result{}, nil, mc.snapshot(), false
+			return Result{}, nil, mc.snapshot(), false, nil
 		}
 		if allFull(slots) {
 			break
@@ -319,23 +324,22 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 	// A backfill match has to admit somebody: seating the roster that is already
 	// playing, and nobody else, is not a match worth returning.
 	if backfill != nil && len(used) == 1 {
-		return Result{}, nil, mc.snapshot(), false
+		return Result{}, nil, mc.snapshot(), false, nil
 	}
 	if !allMinSatisfied(slots) {
-		return Result{}, nil, mc.snapshot(), false
+		return Result{}, nil, mc.snapshot(), false, nil
 	}
 	// The complete-match check, enforcing every rule rather than only the ones the
 	// placement gate deemed ready.
 	//
-	// It cannot currently reject: a failed placement is reverted exactly, so these
-	// slots are the ones the last accepted placement was validated against, and
-	// reaching allMinSatisfied here means no rule was deferred at that moment. The
-	// check is kept as the invariant's guard — it is what makes "every rule holds
-	// over the finished match" a property of this function rather than of the
-	// loop's bookkeeping — so a future placement path that skips validation cannot
-	// emit an inadmissible match.
-	if !rulesPass(evals, slots, nil, mc) {
-		return Result{}, nil, mc.snapshot(), false
+	// Deferred lower bounds and compound rules are evaluated here before a match
+	// can be returned.
+	pass, err := rulesPass(evals, slots, nil, mc)
+	if err != nil {
+		return Result{}, nil, nil, false, err
+	}
+	if !pass {
+		return Result{}, nil, mc.snapshot(), false, nil
 	}
 
 	out := Result{Teams: make(map[string][]core.Player, len(slots)), Region: sharedRegion(slots)}
@@ -343,7 +347,7 @@ func formOne(rs *ruleset.RuleSet, evals []rule.Evaluator, reqs map[string]teamRe
 		out.Teams[s.Name] = s.Players
 	}
 	out.TicketIDs = slices.Sorted(maps.Keys(used))
-	return out, used, mc.snapshot(), true
+	return out, used, mc.snapshot(), true, nil
 }
 
 // seedBackfill seats a backfill ticket's players on the teams they already
@@ -471,125 +475,18 @@ func sharedRegion(slots []teamSlot) string {
 	return best
 }
 
-// teamReq records which teams a rule depends on. A rule is only meaningful once
-// the teams it reads have reached their minimum size; until then the greedy
-// builder must not let the rule reject a placement, or balance/size rules
-// (e.g. count(teams[a]) = count(teams[b])) would fail against the inevitably
-// imbalanced partial matches that occur while teams are still filling.
-type teamReq struct {
-	all   bool                // references teams[*] or a match-wide scope
-	teams map[string]struct{} // referenced team base names
-}
-
-// buildTeamReqs computes, per rule name, the teams that rule must wait for
-// before it can be enforced during incremental placement.
-//
-// Only size/count rules need to wait: a rule that measures team player counts
-// (it contains a count(...) expression, e.g. count(teams[a].players) =
-// count(teams[b].players)) inevitably fails against the imbalanced partial
-// matches the greedy builder traverses while filling teams, yet becomes
-// satisfiable once the teams are balanced. Such a rule waits for the teams it
-// references (teams[<name>] / teams[*]) to reach minPlayers. Every other rule —
-// skill distances, collection/membership constraints like a block list, and so
-// on — is monotonic (a violation is not undone by adding players) and yields a
-// zero teamReq, meaning "always ready", so its incremental behaviour is
-// unchanged. Compound rules inherit the union of their referenced rules' waits.
-func buildTeamReqs(rs *ruleset.RuleSet) map[string]teamReq {
-	reqs := make(map[string]teamReq, len(rs.Rules))
-	for i := range rs.Rules {
-		r := &rs.Rules[i]
-		if r.Type == ruleset.RuleCompound {
-			continue
-		}
-		exprs := ruleExprStrings(r)
-		if exprsContainCount(exprs) {
-			reqs[r.Name] = scanTeamRefs(exprs)
-		} else {
-			reqs[r.Name] = teamReq{teams: map[string]struct{}{}}
-		}
-	}
-	for i := range rs.Rules {
-		r := &rs.Rules[i]
-		if r.Type != ruleset.RuleCompound {
-			continue
-		}
-		req := teamReq{teams: map[string]struct{}{}}
-		if node, err := ruleset.ParseCompound(r.Statement); err == nil {
-			for _, child := range node.RuleNames() {
-				cr := reqs[child]
-				if cr.all {
-					req.all = true
-				}
-				for name := range cr.teams {
-					req.teams[name] = struct{}{}
-				}
-			}
-		}
-		reqs[r.Name] = req
-	}
-	return reqs
-}
-
-// exprsContainCount reports whether any expression counts players, which is the
-// signature of a team-size rule whose enforcement must wait for teams to fill.
-func exprsContainCount(exprs []string) bool {
-	return slices.ContainsFunc(exprs, func(s string) bool { return strings.Contains(s, "count(") })
-}
-
-// ruleExprStrings collects the property-expression strings of a rule: its
-// measurements plus its referenceValue when that is a JSON string (rather than
-// a numeric literal).
-func ruleExprStrings(r *ruleset.Rule) []string {
-	out := slices.Clone(r.Measurements)
-	if rv := r.ReferenceValue; len(rv) > 0 {
-		var s string
-		if json.Unmarshal(rv, &s) == nil {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// scanTeamRefs extracts teams[<name>] and teams[*] references from expression
-// strings.
-func scanTeamRefs(exprs []string) teamReq {
-	req := teamReq{teams: map[string]struct{}{}}
-	for _, s := range exprs {
-		for {
-			_, rest, found := strings.Cut(s, "teams[")
-			if !found {
-				break
-			}
-			name, tail, closed := strings.Cut(rest, "]")
-			if !closed {
-				break
-			}
-			s = tail
-			name = strings.TrimSpace(name)
-			if name == "*" || name == "" {
-				req.all = true
-				continue
-			}
-			req.teams[name] = struct{}{}
-		}
-	}
-	return req
-}
-
-// ruleReady reports whether the teams a rule depends on have all reached their
-// minimum size in the current slots, so the rule can be enforced during
-// incremental placement. A zero teamReq (no dependency) is always ready.
-func ruleReady(req teamReq, slots []teamSlot) bool {
-	if req.all {
-		for _, s := range slots {
-			if len(s.Players) < s.MinPlayers {
+// ruleReady reports whether every referenced concrete team has reached its minimum size.
+func ruleReady(req rule.Dependency, slots []teamSlot) bool {
+	if req.All {
+		for _, slot := range slots {
+			if len(slot.Players) < slot.MinPlayers {
 				return false
 			}
 		}
 	}
-	for name := range req.teams {
-		for _, s := range slots {
-			if s.BaseName == name && len(s.Players) < s.MinPlayers {
+	for name := range req.Teams {
+		for _, slot := range slots {
+			if (slot.Name == name || slot.BaseName == name) && len(slot.Players) < slot.MinPlayers {
 				return false
 			}
 		}
@@ -597,35 +494,43 @@ func ruleReady(req teamReq, slots []teamSlot) bool {
 	return true
 }
 
-// rulesPass evaluates every rule against the candidate built from slots,
-// recording each pass/fail into mc, and reports whether the candidate is
-// admissible (all rules passed). It never short-circuits, so each rule's
-// failedCount is complete; the returned bool still matches "all rules passed",
-// so match correctness is unchanged.
-//
-// reqs selects the mode. When non-nil this is the placement-time gate: rules
-// whose referenced teams have not yet reached minPlayers are skipped and
-// deferred to the final evaluation, which lets the greedy builder pass through
-// the temporarily imbalanced states it must traverse while filling teams. When
-// nil — the final, complete-match check, where every team is at least at its
-// minimum and all rules are therefore ready — every rule is enforced.
-func rulesPass(evals []rule.Evaluator, slots []teamSlot, reqs map[string]teamReq, mc *metricsCollector) bool {
-	// Region is left empty so latency rules pick any satisfying region.
+// rulesPass evaluates every ready rule and distinguishes evaluation failures
+// from ordinary rule mismatches. Deferred rules do not change metrics.
+func rulesPass(evals []rule.Evaluator, slots []teamSlot, reqs map[string]rule.Dependency, mc *metricsCollector) (bool, error) {
 	cand := buildCandidate(slots, "")
 	allOK := true
-	for _, e := range evals {
-		if reqs != nil && !ruleReady(reqs[e.Name()], slots) {
+	for _, ev := range evals {
+		dep := reqs[ev.Name()]
+		if reqs != nil && dep.Count && !ruleReady(dep, slots) {
 			continue
 		}
-		ok, err := e.Evaluate(cand)
-		if err == nil && ok {
-			mc.passed[e.Name()]++
+		var ok, deferred bool
+		var err error
+		if reqs != nil && dep.DeferFinal {
+			if partial, supported := ev.(interface {
+				EvaluatePartial(*rule.Candidate) (bool, bool, error)
+			}); supported {
+				ok, deferred, err = partial.EvaluatePartial(cand)
+			} else {
+				continue
+			}
 		} else {
-			mc.failed[e.Name()]++
+			ok, err = ev.Evaluate(cand)
+		}
+		if err != nil {
+			return false, fmt.Errorf("rule %q: %w", ev.Name(), err)
+		}
+		if deferred {
+			continue
+		}
+		if ok {
+			mc.passed[ev.Name()]++
+		} else {
+			mc.failed[ev.Name()]++
 			allOK = false
 		}
 	}
-	return allOK
+	return allOK, nil
 }
 
 func buildCandidate(slots []teamSlot, region string) *rule.Candidate {

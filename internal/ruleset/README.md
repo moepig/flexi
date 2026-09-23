@@ -31,6 +31,7 @@ consume the structures defined here.
 - `(*RuleSet).Validate()` — the semantic checks Parse runs after JSON
   decoding (uniqueness, references, enum values, expansion target shape,
   etc.). Exposed for tests and for callers that build a `RuleSet` by hand.
+- `ExpandedTeamNames(team)` — returns the concrete names created by `quantity`. Validation rejects collisions between concrete names and other declarations' base names.
 
 ## Design notes
 

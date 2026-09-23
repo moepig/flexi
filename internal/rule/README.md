@@ -14,6 +14,7 @@ its own file so the implementations stay small and obvious.
 - `Build(r *ruleset.Rule, compounds map[string]Evaluator) (Evaluator, error)`
   — the factory dispatched by rule type. `compounds` carries the already
   built evaluators that compound rules can reference.
+- `BuildSet(rs)` constructs evaluators in dependency order, validates parsed expressions and compound cycles, and returns top-level evaluators in declaration order with AST-based placement dependencies.
 - `Candidate` — the tentative match passed to evaluators: full player
   roster, per-team roster, and (optionally) a chosen region for latency
   evaluation.
@@ -35,9 +36,7 @@ its own file so the implementations stay small and obvious.
 
 ## Design notes
 
-- Evaluators are pure functions of `*Candidate`: no internal state, no
-  side effects. This makes them trivially safe to share across goroutines
-  and easy to test in isolation.
+- Evaluators are read-only after construction. A collection rule eligible for partial evaluation checks its upper bound during placement and defers an unmet lower bound until the complete candidate.
 - A `false` return means "this candidate does not pass right now". An
   error means the rule was misconfigured in a way the validator did not
   catch (e.g. an attribute referenced by the wrong type).

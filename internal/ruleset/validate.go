@@ -21,20 +21,25 @@ func (rs *RuleSet) Validate() error {
 		return fmt.Errorf("%w: at least one team is required", ErrInvalidRuleSet)
 	}
 
-	teamNames := make(map[string]struct{}, len(rs.Teams))
+	teamNames := make(map[string]int, len(rs.Teams))
 	for i, t := range rs.Teams {
 		if t.Name == "" {
 			return fmt.Errorf("%w: teams[%d].name is required", ErrInvalidRuleSet, i)
 		}
-		if _, dup := teamNames[t.Name]; dup {
-			return fmt.Errorf("%w: duplicate team name %q", ErrInvalidRuleSet, t.Name)
+		for _, name := range append([]string{t.Name}, ExpandedTeamNames(t)...) {
+			if owner, dup := teamNames[name]; dup && owner != i {
+				return fmt.Errorf("%w: team name %q from %q conflicts with %q", ErrInvalidRuleSet, name, t.Name, rs.Teams[owner].Name)
+			}
+			teamNames[name] = i
 		}
-		teamNames[t.Name] = struct{}{}
 		if t.MaxPlayers <= 0 {
 			return fmt.Errorf("%w: team %q maxPlayers must be > 0", ErrInvalidRuleSet, t.Name)
 		}
 		if t.MinPlayers < 0 || t.MinPlayers > t.MaxPlayers {
 			return fmt.Errorf("%w: team %q minPlayers out of range", ErrInvalidRuleSet, t.Name)
+		}
+		if t.Quantity < 0 {
+			return fmt.Errorf("%w: team %q quantity must be >= 0", ErrInvalidRuleSet, t.Name)
 		}
 	}
 
@@ -231,6 +236,15 @@ func validateRule(r *Rule) error {
 			return err
 		}
 	case RuleCollection:
+		if r.MinCount != nil && *r.MinCount < 0 {
+			return fmt.Errorf("collection minCount must be >= 0")
+		}
+		if r.MaxCount != nil && *r.MaxCount < 0 {
+			return fmt.Errorf("collection maxCount must be >= 0")
+		}
+		if r.MinCount != nil && r.MaxCount != nil && *r.MinCount > *r.MaxCount {
+			return fmt.Errorf("collection minCount exceeds maxCount")
+		}
 		if len(r.Measurements) == 0 {
 			return fmt.Errorf("collection requires measurements")
 		}

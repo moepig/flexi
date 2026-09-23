@@ -118,8 +118,8 @@
 //
 // # Errors and retained state
 //
-// Every failure is classifiable with errors.Is. A ticket rejected for its own
-// contents — no ID, no players, an attribute whose kind disagrees with the rule
+// Input and state failures are classifiable with errors.Is. A ticket rejected for its own
+// contents — no ID, no players, an empty or duplicate player ID, an attribute whose kind disagrees with the rule
 // set, a team assignment that is missing, unknown, or ambiguous, a team or
 // roster over its limit — wraps [ErrInvalidTicket], so a caller fronting an API
 // answers all of them as one class of client mistake. A ticket rejected for the

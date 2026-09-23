@@ -15,10 +15,7 @@ is emitted as a match.
 
 - `Result` — one assembled match: per-team players, the consumed
   ticket IDs, and the inferred shared region.
-- `Build(rs, evals, tickets) ([]Result, []core.Ticket, map[string][]core.RuleMetric)` —
-  the main export. Calls `formNext` repeatedly, accumulating matches until
-  no more can be formed. Returns the leftover tickets in queue order so the
-  caller can put them back.
+- `Build(rs, set, tickets)` returns matches, leftover tickets, per-ticket metrics, and an evaluation error. Results and metrics are discarded on error.
 - `CheckBackfillRoster(rs, players) error` — validates a backfill ticket's
   team assignments against `rs` on behalf of the public package, so a
   roster that could never be seated is rejected at enqueue time.
@@ -44,7 +41,7 @@ For a single match (`formOne`):
 4. For each ticket, compute a team ordering (`teamOrder`) and try to
    place the whole party on the first slot where:
    - capacity is not exceeded (`canAdd`), and
-   - all rules still pass against the candidate so far.
+   - ready rules pass against the candidate so far. Count rules wait for the referenced teams' minimum sizes, and eligible collection lower bounds may be deferred.
    If no slot works, the ticket is left in the queue.
 5. If the seed ticket cannot be placed at all, abandon this attempt.
 6. After processing every ticket (or once every slot is full), require
@@ -63,10 +60,8 @@ attempt it makes.
 - The search is greedy on purpose. A full backtracking search would be
   combinatorial in the ticket count; this implementation is fast and
   produces the same result on most realistic inputs.
-- Rules are checked at every placement step, not just at the end.
-  `internal/expr` returns `KindNone` for aggregates over empty teams and
-  `internal/rule` treats that as "skip", which is what makes incremental
-  evaluation safe for rules like `distance` that compare team aggregates.
+- Ready rules are checked at every placement step and all rules are checked on the complete candidate. A deferred collection lower bound does not count as a pass or failure in placement metrics. Evaluation errors stop the search and discard its results.
+- Per-ticket metrics are derived from cumulative search totals when each ticket is consumed or the search ends. This preserves attribution without updating every waiting ticket after every match.
 - `sharedRegion` picks the region every player has a latency entry for,
   but the latency rule itself is responsible for verifying the threshold;
   the region in `Result` is informational.

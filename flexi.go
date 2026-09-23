@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -25,7 +24,7 @@ var ErrInvalidRuleSet = ruleset.ErrInvalidRuleSet
 
 // ErrInvalidTicket is returned by [Matchmaker.Enqueue] and
 // [Matchmaker.EnqueueBackfill] when the submitted ticket is not well formed:
-// an empty ID, no players, an attribute whose kind disagrees with the rule
+// an empty ID, no players, an empty or duplicate player ID, an attribute whose kind disagrees with the rule
 // set, a team assignment that is missing, unresolvable, or ambiguous, a team
 // or roster larger than allowed. Every such check wraps it, so a caller
 // classifies a rejected ticket as its own fault with a single [errors.Is]
@@ -89,9 +88,13 @@ const maxBackfillPlayers = 199
 // protected by a mutex so producers may Enqueue/Cancel/Accept concurrently
 // with a ticking loop.
 type Matchmaker struct {
-	rs    *ruleset.RuleSet
-	q     *queue.Queue
-	clock Clock
+	rs           *ruleset.RuleSet
+	set          *rule.Set
+	expansionKey []int
+	expandedRS   *ruleset.RuleSet
+	expandedSet  *rule.Set
+	q            *queue.Queue
+	clock        Clock
 	// defaults holds parsed playerAttributes defaults, applied to players that
 	// omit a declared attribute when they are enqueued.
 	defaults map[string]core.Attribute
@@ -163,8 +166,16 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 	if err != nil {
 		return nil, err
 	}
+	set, err := rule.BuildSet(rs)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidRuleSet, err)
+	}
+	if err := validateExpansions(rs); err != nil {
+		return nil, err
+	}
 	return &Matchmaker{
 		rs:                rs,
+		set:               set,
 		q:                 queue.New(),
 		clock:             cfg.clock,
 		defaults:          defaults,
@@ -181,7 +192,8 @@ func New(rulesetJSON []byte, opts ...Option) (*Matchmaker, error) {
 // Enqueue adds t to the matchmaking queue and records its status as
 // [StatusQueued].
 //
-// The ticket's EnqueuedAt field is set from the configured [Clock]; any
+// The ticket is copied before it is retained; callers may mutate their input
+// after Enqueue returns. The ticket's EnqueuedAt field is set from the configured [Clock]; any
 // value supplied by the caller is overwritten so that wait-time calculations
 // remain consistent. The ticket must have a non-empty ID and at least one
 // player, and its attributes must agree with the types the rule set declares;
@@ -268,9 +280,20 @@ func (m *Matchmaker) enqueue(t Ticket) error {
 	if len(t.Players) == 0 {
 		return invalidTicketf("ticket must have at least one player")
 	}
+	playerIDs := make(map[string]struct{}, len(t.Players))
+	for _, p := range t.Players {
+		if p.ID == "" {
+			return invalidTicketf("player id is required")
+		}
+		if _, exists := playerIDs[p.ID]; exists {
+			return invalidTicketf("duplicate player id %q", p.ID)
+		}
+		playerIDs[p.ID] = struct{}{}
+	}
 	if err := m.checkAttributeTypes(t); err != nil {
 		return err
 	}
+	t = cloneTicket(t)
 	t = m.applyDefaults(t)
 	t.EnqueuedAt = m.clock.Now()
 
@@ -396,38 +419,27 @@ func parseDefaults(rs *ruleset.RuleSet) (map[string]core.Attribute, error) {
 			dst = &a.SDM
 		}
 		if err := json.Unmarshal(pa.Default, dst); err != nil {
-			return nil, fmt.Errorf("flexi: playerAttribute %q default: %w", pa.Name, err)
+			return nil, fmt.Errorf("%w: playerAttribute %q default: %v", ErrInvalidRuleSet, pa.Name, err)
 		}
 		out[pa.Name] = a
 	}
 	return out, nil
 }
 
-// applyDefaults returns a copy of t in which any player missing a declared
-// attribute that has a default value has that default filled in.
+// Fills missing attributes in a ticket owned by the matchmaker.
 func (m *Matchmaker) applyDefaults(t Ticket) Ticket {
-	if len(m.defaults) == 0 {
-		return t
-	}
-	players := make([]core.Player, len(t.Players))
-	for i, p := range t.Players {
-		players[i] = p
-		var attrs core.Attributes
+	for i := range t.Players {
+		p := &t.Players[i]
 		for name, def := range m.defaults {
 			if _, ok := p.Attributes[name]; ok {
 				continue
 			}
-			if attrs == nil {
-				attrs = make(core.Attributes, len(p.Attributes)+1)
-				maps.Copy(attrs, p.Attributes)
+			if p.Attributes == nil {
+				p.Attributes = make(core.Attributes)
 			}
-			attrs[name] = def
-		}
-		if attrs != nil {
-			players[i].Attributes = attrs
+			p.Attributes[name] = cloneAttribute(def)
 		}
 	}
-	t.Players = players
 	return t
 }
 
@@ -595,7 +607,7 @@ func (m *Matchmaker) PendingAcceptances() []Proposal {
 // returned.
 //
 // Returns [ErrUnknownTicket] if the ticket is not tracked, [ErrUnknownProposal]
-// if the ticket is not currently in a pending proposal, or [ErrUnknownPlayer]
+// if the ticket is not currently in a pending proposal or its acceptance deadline has passed, or [ErrUnknownPlayer]
 // if playerID is not a member of the ticket.
 func (m *Matchmaker) Accept(ticketID, playerID string) error {
 	return m.record(ticketID, playerID, acceptYes)
@@ -633,6 +645,9 @@ func (m *Matchmaker) record(ticketID, playerID string, d playerAcceptance) error
 	if _, ok := players[playerID]; !ok {
 		return ErrUnknownPlayer
 	}
+	if m.proposalExpired(p, m.clock.Now()) {
+		return ErrUnknownProposal
+	}
 	players[playerID] = d
 	if d == acceptNo {
 		m.failProposal(p)
@@ -667,34 +682,29 @@ func (m *Matchmaker) MarkCompleted(ticketID string) error {
 //  1. Expires any proposals whose acceptanceTimeoutSeconds has elapsed: their
 //     fully-accepted tickets return to the queue in [StatusSearching] and the
 //     rest move to [StatusCancelled].
-//  2. Resolves any proposals that have been fully accepted, moving tickets
-//     to [StatusPlacing] and returning the corresponding [Match] values.
-//  3. Fails any queued or re-queued ticket that has been in matchmaking longer
+//  2. Fails any queued or re-queued ticket that has been in matchmaking longer
 //     than requestTimeoutSeconds, moving it to [StatusTimedOut].
-//  4. Applies FlexMatch expansions based on the oldest queued ticket's
+//  3. Applies FlexMatch expansions based on the selected queued ticket's
 //     wait time.
-//  5. Runs the matching algorithm over the remaining queued tickets.
+//  4. Runs the matching algorithm over the remaining queued tickets.
 //     When acceptanceRequired=false, each result becomes a [Match] returned
 //     in this tick; when true, each result is held as a new proposal and
 //     its tickets move to [StatusRequiresAcceptance].
+//  5. Resolves fully accepted proposals and commits the new search results.
 //
-// Tick returns nil, nil when nothing resolves in this step. A non-nil error
-// indicates a configuration problem (for example, an expansion targeting a
-// field that no longer exists).
+// Tick returns nil, nil when nothing resolves in this step. An evaluation
+// error leaves accepted proposals and search results uncommitted.
 func (m *Matchmaker) Tick() ([]Match, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := m.clock.Now()
 	m.expireProposals(now)
-	matches := m.resolveAcceptedProposals()
 	m.expireRequests(now)
 
-	// matches is nil rather than empty when nothing resolved, so returning it
-	// directly already yields the documented nil, nil "nothing happened" result.
 	tickets := m.q.Snapshot()
 	if len(tickets) == 0 {
-		return matches, nil
+		return m.resolveAcceptedProposals(), nil
 	}
 
 	// Expansion wait time is measured against either the oldest or the newest
@@ -717,19 +727,33 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 	}
 	elapsed := now.Sub(ref)
 
-	rs, err := expansion.Apply(m.rs, elapsed)
-	if err != nil {
-		return nil, fmt.Errorf("flexi: apply expansions: %w", err)
+	rs, set := m.rs, m.set
+	if len(m.rs.Expansions) != 0 {
+		key := expansionSelection(m.rs, elapsed)
+		if slices.Equal(key, m.expansionKey) && m.expandedRS != nil {
+			rs, set = m.expandedRS, m.expandedSet
+		} else if allUnapplied(key) {
+			rs, set = m.rs, m.set
+			m.expansionKey, m.expandedRS, m.expandedSet = key, rs, set
+		} else {
+			var err error
+			rs, err = expansion.Apply(m.rs, elapsed)
+			if err != nil {
+				return nil, fmt.Errorf("flexi: apply expansions: %w", err)
+			}
+			set, err = rule.BuildSet(rs)
+			if err != nil {
+				return nil, fmt.Errorf("flexi: build expanded rules: %w", err)
+			}
+			m.expansionKey, m.expandedRS, m.expandedSet = key, rs, set
+		}
 	}
-
-	evals, err := buildEvaluators(rs)
+	results, _, tickMetrics, err := algorithm.Build(rs, set, tickets)
 	if err != nil {
 		return nil, err
 	}
-
-	results, _, tickMetrics := algorithm.Build(rs, evals, tickets)
-	// Accumulate this tick's metrics onto every participating ticket before
-	// branching, so tickets that go on to time out or be cancelled keep them.
+	matches := m.resolveAcceptedProposals()
+	// Accumulate search metrics only after the search has completed successfully.
 	for id, mtr := range tickMetrics {
 		m.ruleMetrics[id] = algorithm.MergeMetrics(m.ruleMetrics[id], mtr)
 	}
@@ -738,22 +762,29 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 	}
 
 	if m.rs.AcceptanceRequired {
+		byID := make(map[string]core.Ticket, len(tickets))
+		for _, t := range tickets {
+			byID[t.ID] = t
+		}
+		var consumed []string
 		for _, r := range results {
 			p := newProposal(matchResult{
 				Teams:                 r.Teams,
 				TicketIDs:             r.TicketIDs,
 				RuleEvaluationMetrics: r.RuleEvaluationMetrics,
-			}, tickets, now)
+			}, byID, now)
 			m.proposals = append(m.proposals, p)
 			for _, id := range r.TicketIDs {
 				m.statuses[id] = StatusRequiresAcceptance
 				m.ticketToProposal[id] = p
 			}
-			m.q.Remove(r.TicketIDs)
+			consumed = append(consumed, r.TicketIDs...)
 		}
+		m.q.Remove(consumed)
 		return matches, nil
 	}
 
+	var consumed []string
 	for _, r := range results {
 		matches = append(matches, Match{
 			Teams:                 r.Teams,
@@ -763,9 +794,33 @@ func (m *Matchmaker) Tick() ([]Match, error) {
 		for _, id := range r.TicketIDs {
 			m.statuses[id] = StatusPlacing
 		}
-		m.q.Remove(r.TicketIDs)
+		consumed = append(consumed, r.TicketIDs...)
 	}
+	m.q.Remove(consumed)
 	return matches, nil
+}
+
+func expansionSelection(rs *ruleset.RuleSet, elapsed time.Duration) []int {
+	key := make([]int, len(rs.Expansions))
+	seconds := int(elapsed / time.Second)
+	for i, exp := range rs.Expansions {
+		key[i] = -1
+		for j, step := range exp.Steps {
+			if step.WaitTimeSeconds <= seconds {
+				key[i] = j
+			}
+		}
+	}
+	return key
+}
+
+func allUnapplied(key []int) bool {
+	for _, step := range key {
+		if step != -1 {
+			return false
+		}
+	}
+	return true
 }
 
 // expireProposals discards proposals whose acceptance window has elapsed,
@@ -776,14 +831,18 @@ func (m *Matchmaker) expireProposals(now time.Time) {
 	if m.rs.AcceptanceTimeoutSeconds <= 0 || len(m.proposals) == 0 {
 		return
 	}
-	deadline := time.Duration(m.rs.AcceptanceTimeoutSeconds) * time.Second
-	expired := func(p *proposal) bool { return now.Sub(p.createdAt) >= deadline }
+	expired := func(p *proposal) bool { return m.proposalExpired(p, now) && !p.fullyAccepted() }
 	for _, p := range m.proposals {
 		if expired(p) {
 			m.failProposalTickets(p)
 		}
 	}
 	m.proposals = slices.DeleteFunc(m.proposals, expired)
+}
+
+func (m *Matchmaker) proposalExpired(p *proposal, now time.Time) bool {
+	return m.rs.AcceptanceTimeoutSeconds > 0 &&
+		now.Sub(p.createdAt) >= time.Duration(m.rs.AcceptanceTimeoutSeconds)*time.Second
 }
 
 // expireRequests fails any queued or re-queued (SEARCHING) ticket that has been
@@ -900,66 +959,4 @@ func (m *Matchmaker) markProposalTickets(p *proposal, status TicketStatus) {
 // m.mu.
 func (m *Matchmaker) removeProposal(p *proposal) {
 	m.proposals = slices.DeleteFunc(m.proposals, func(q *proposal) bool { return q == p })
-}
-
-// buildEvaluators constructs evaluators in two passes so that compound rules
-// can resolve references to siblings that appear later in the rule list.
-//
-// A rule that is referenced by a compound rule's statement is NOT returned as a
-// top-level evaluator: AWS FlexMatch evaluates such a rule only as part of the
-// compound that references it, never standalone. Were it enforced on its own,
-// a statement like or(A, B) would collapse to "A and B" (both would have to
-// pass independently), defeating the compound's logic. The referenced rule is
-// still built and kept in the lookup map so the compound can evaluate it.
-func buildEvaluators(rs *ruleset.RuleSet) ([]rule.Evaluator, error) {
-	others := make(map[string]rule.Evaluator, len(rs.Rules))
-	for i := range rs.Rules {
-		if rs.Rules[i].Type == ruleset.RuleCompound {
-			continue
-		}
-		ev, err := rule.Build(&rs.Rules[i], others)
-		if err != nil {
-			return nil, fmt.Errorf("flexi: build rule %q: %w", rs.Rules[i].Name, err)
-		}
-		others[rs.Rules[i].Name] = ev
-	}
-	referenced := compoundReferencedRules(rs)
-	for i := range rs.Rules {
-		if rs.Rules[i].Type != ruleset.RuleCompound {
-			continue
-		}
-		ev, err := rule.Build(&rs.Rules[i], others)
-		if err != nil {
-			return nil, fmt.Errorf("flexi: build compound %q: %w", rs.Rules[i].Name, err)
-		}
-		others[rs.Rules[i].Name] = ev
-	}
-	out := make([]rule.Evaluator, 0, len(rs.Rules))
-	for i := range rs.Rules {
-		if _, ref := referenced[rs.Rules[i].Name]; ref {
-			continue
-		}
-		out = append(out, others[rs.Rules[i].Name])
-	}
-	return out, nil
-}
-
-// compoundReferencedRules returns the set of rule names that appear inside any
-// compound rule's statement. Statements have already been validated by
-// ruleset.Parse, so a parse failure here is treated as "no references".
-func compoundReferencedRules(rs *ruleset.RuleSet) map[string]struct{} {
-	referenced := make(map[string]struct{})
-	for i := range rs.Rules {
-		if rs.Rules[i].Type != ruleset.RuleCompound {
-			continue
-		}
-		node, err := ruleset.ParseCompound(rs.Rules[i].Statement)
-		if err != nil {
-			continue
-		}
-		for _, name := range node.RuleNames() {
-			referenced[name] = struct{}{}
-		}
-	}
-	return referenced
 }

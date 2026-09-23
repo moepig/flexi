@@ -31,6 +31,26 @@ func buildCollection(r *ruleset.Rule) (Evaluator, error) {
 	if err != nil {
 		return nil, err
 	}
+	switch r.Operation {
+	case "contains", "not_contains":
+		if ref.IsList {
+			return nil, fmt.Errorf("collection %q: %s requires a scalar referenceValue", r.Name, r.Operation)
+		}
+		if _, numeric := ref.Node.(expr.NumberLit); numeric {
+			return nil, fmt.Errorf("collection %q: %s requires a string referenceValue", r.Name, r.Operation)
+		}
+	case "reference_intersection_count":
+		if ref.IsList {
+			for i, raw := range ref.RawList {
+				var value string
+				if err := json.Unmarshal(raw, &value); err != nil {
+					return nil, fmt.Errorf("collection %q: referenceValue[%d] must be a string: %w", r.Name, i, err)
+				}
+			}
+		} else if _, literal := ref.Node.(expr.StringLit); literal {
+			return nil, fmt.Errorf("collection %q: reference_intersection_count requires a list referenceValue", r.Name)
+		}
+	}
 	return &collection{
 		name: r.Name, measures: ms, op: r.Operation, ref: ref,
 		minCount: r.MinCount, maxCount: r.MaxCount,
@@ -39,6 +59,66 @@ func buildCollection(r *ruleset.Rule) (Evaluator, error) {
 }
 
 func (c *collection) Name() string { return c.name }
+
+func (c *collection) partialEligible() bool {
+	if c.op != "contains" || len(c.measures) == 0 {
+		return false
+	}
+	if _, ok := c.ref.Node.(expr.StringLit); !ok {
+		return false
+	}
+	for _, n := range c.measures {
+		for {
+			call, ok := n.(expr.FuncCall)
+			if !ok {
+				break
+			}
+			if call.Name != "flatten" {
+				return false
+			}
+			n = call.Arg
+		}
+		if _, ok := n.(expr.PlayerAccess); !ok {
+			return false
+		}
+	}
+	return c.minCount != nil || c.maxCount == nil
+}
+
+// Checks the upper bound of a monotonic contains rule during
+// placement. A missing lower bound is deferred to complete-match evaluation.
+func (c *collection) EvaluatePartial(cand *Candidate) (bool, bool, error) {
+	mode := c.partyAgg
+	if mode == "" {
+		mode = "union"
+	}
+	cand = aggregateCandidateWith(cand, func(party []core.Player) core.Player { return aggregatePartySets(party, mode) })
+	ctx := cand.evalContext()
+	deferred := false
+	for _, m := range c.measures {
+		v, err := expr.Eval(m, ctx)
+		if err != nil {
+			return false, false, err
+		}
+		n, err := c.countRef(v, ctx)
+		if err != nil {
+			return false, false, err
+		}
+		if c.maxCount != nil && n > *c.maxCount {
+			return false, false, nil
+		}
+		min := 0
+		if c.minCount != nil {
+			min = *c.minCount
+		} else if c.maxCount == nil {
+			min = 1
+		}
+		if n < min {
+			deferred = true
+		}
+	}
+	return true, deferred, nil
+}
 
 func (c *collection) Evaluate(cand *Candidate) (bool, error) {
 	// partyAggregation defaults to "union" per the FlexMatch spec.

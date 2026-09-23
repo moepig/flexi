@@ -30,6 +30,69 @@ func Apply(rs *ruleset.RuleSet, elapsed time.Duration) (*ruleset.RuleSet, error)
 	return out, nil
 }
 
+// Checks that an expansion addresses a supported field on each
+// referenced declaration. Apply validates the step value at its active time.
+func ValidateTarget(rs *ruleset.RuleSet, target string) error {
+	if strings.HasPrefix(target, "algorithm.") {
+		switch strings.TrimPrefix(target, "algorithm.") {
+		case "strategy", "batchingPreference", "balancedAttribute", "backfillPriority", "expansionAgeSelection":
+			return nil
+		}
+		return fmt.Errorf("expansion: unsupported target %q", target)
+	}
+	comp, rest, ok := strings.Cut(target, "[")
+	if !ok {
+		return fmt.Errorf("expansion: invalid target %q", target)
+	}
+	names, field, ok := strings.Cut(rest, "].")
+	if !ok || len(splitNames(names)) == 0 {
+		return fmt.Errorf("expansion: invalid target %q", target)
+	}
+	for _, name := range splitNames(names) {
+		found := false
+		switch comp {
+		case "teams":
+			for _, team := range rs.Teams {
+				if team.Name == name {
+					found = true
+				}
+			}
+			if field != "minPlayers" && field != "maxPlayers" {
+				return fmt.Errorf("expansion: unsupported team field %q", field)
+			}
+		case "rules":
+			for _, r := range rs.Rules {
+				if r.Name != name {
+					continue
+				}
+				found = true
+				allowed := false
+				switch field {
+				case "referenceValue":
+					allowed = r.Type == ruleset.RuleComparison || r.Type == ruleset.RuleDistance || r.Type == ruleset.RuleCollection
+				case "maxDistance":
+					allowed = r.Type == ruleset.RuleDistance || r.Type == ruleset.RuleBatchDistance || r.Type == ruleset.RuleLatency
+				case "minDistance":
+					allowed = r.Type == ruleset.RuleDistance
+				case "maxLatency":
+					allowed = r.Type == ruleset.RuleLatency
+				case "minCount", "maxCount":
+					allowed = r.Type == ruleset.RuleCollection
+				}
+				if !allowed {
+					return fmt.Errorf("expansion: field %q is not valid for rule %q of type %q", field, name, r.Type)
+				}
+			}
+		default:
+			return fmt.Errorf("expansion: unsupported target %q", target)
+		}
+		if !found {
+			return fmt.Errorf("expansion: unknown %s %q in target %q", comp, name, target)
+		}
+	}
+	return nil
+}
+
 func pickStep(steps []ruleset.ExpansionStep, secs int) *ruleset.ExpansionStep {
 	var chosen *ruleset.ExpansionStep
 	for i := range steps {

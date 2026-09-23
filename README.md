@@ -107,6 +107,10 @@ for range ticker.C {
 
 `Tick` returns every match that can be formed at this moment. Tickets consumed by a returned match are removed from the queue atomically; everything else stays queued for a future tick.
 
+Rule syntax, references, defaults, and expansion steps are checked by `New`. A `Tick` error can still occur when player data makes an expression impossible to evaluate. In that case, `Tick` returns no matches, keeps accepted proposals pending, and does not commit metrics or new search results.
+
+`Enqueue` and `EnqueueBackfill` retain independent copies of the submitted players and attributes. `PendingAcceptances` returns independent snapshots, including nested attribute and latency data. Callers may change their input after enqueue completes and may change returned proposals without changing matchmaking state.
+
 ## Time and expansions
 
 Anything time-dependent — most importantly the FlexMatch `expansions` block — reads the current time through a `Clock`. The default is the system clock; tests should pass `WithClock(NewFakeClock(...))` so they can advance time without sleeping.
@@ -274,6 +278,8 @@ FlexMatch by splitting the proposal's tickets:
   for the request-level deadline below, not for acceptance failures.) Resubmit
   with a fresh ticket ID for another attempt.
 
+`Accept` and `Reject` return `ErrUnknownProposal` once the acceptance deadline is reached, including for repeated decisions. A proposal accepted by everyone before the deadline remains valid even if the next `Tick` runs after it.
+
 ```go
 mm.Accept("a", "alice")
 mm.Reject("b", "bob")              // proposal fails acceptance
@@ -386,19 +392,17 @@ Automatic backfill (`BackfillMode: "AUTOMATIC"`) is out of scope. AWS does not o
 
 ## Errors
 
-Every error the package returns is classifiable with `errors.Is`, so a caller
-fronting an API — a GameLift-compatible service, say — can map a failure onto
-its own status codes without matching on message text.
+Input and state errors have sentinels for `errors.Is`. Evaluation errors returned by `Tick` describe the expression that failed and are separate from an ordinary rule mismatch.
 
 | Sentinel | Returned when |
 | --- | --- |
 | `ErrInvalidRuleSet` | `New` was given rule set JSON that is malformed or fails semantic validation. |
-| `ErrInvalidTicket` | The submitted ticket is not well formed: no ID, no players, an attribute whose kind disagrees with the rule set, a `Team` that is missing, unknown, or ambiguous, a team or roster over its limit. Wrapped by **every** input-validation failure of `Enqueue` and `EnqueueBackfill`, so one check classifies them all as the caller's own mistake (`400`, not `500`). |
+| `ErrInvalidTicket` | The submitted ticket is not well formed: no ticket ID, no players, an empty or duplicate player ID within the ticket, an attribute whose kind disagrees with the rule set, a `Team` that is missing, unknown, or ambiguous, a team or roster over its limit. |
 | `ErrDuplicateTicket` | The ticket ID is already queued, in a proposal, or in a retained terminal state. |
 | `ErrUnknownTicket` | No ticket with that ID is tracked (or it has been evicted). |
 | `ErrBackfillInProgress` | The game session's outstanding backfill request has already been matched and cannot be superseded. |
 | `ErrTicketNotTerminal` | `Evict` was called on a ticket still in matchmaking. |
-| `ErrUnknownProposal` / `ErrUnknownPlayer` | `Accept` / `Reject` named a ticket that is not in a pending proposal, or a player who is not on the ticket. |
+| `ErrUnknownProposal` / `ErrUnknownPlayer` | `Accept` / `Reject` named a ticket that is not in a pending proposal, its acceptance deadline has passed, or a player is not on the ticket. |
 | `ErrTicketNotPlacing` | `MarkCompleted` was called on a ticket in any status other than `PLACING`. |
 
 `ErrInvalidTicket` covers the ticket's **contents**; `ErrDuplicateTicket` and

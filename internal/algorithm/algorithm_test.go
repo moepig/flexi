@@ -40,6 +40,19 @@ func evals(t *testing.T, rs *ruleset.RuleSet) []rule.Evaluator {
 	return out
 }
 
+func buildForTest(rs *ruleset.RuleSet, evals []rule.Evaluator, tickets []core.Ticket) ([]Result, []core.Ticket, map[string][]core.RuleMetric) {
+	set, err := rule.BuildSet(rs)
+	if err != nil {
+		panic(err)
+	}
+	set.Evaluators = evals
+	results, remaining, metrics, err := Build(rs, set, tickets)
+	if err != nil {
+		panic(err)
+	}
+	return results, remaining, metrics
+}
+
 // Purpose: Verify that Build assembles four solo tickets into a single two-team match.
 // Method:  Supply a rule set with red/blue teams (2 players each) and four solo tickets, then call Build.
 // Expect:  One Result with 2 players per team, 4 TicketIDs, and an empty remaining slice.
@@ -53,7 +66,7 @@ func TestBuild_FormsTwoTeams(t *testing.T) {
 	  ]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 11), solo("c", 12), solo("d", 13)}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Empty(t, remaining)
 	assert.Len(t, out[0].Teams["red"], 2)
@@ -73,7 +86,7 @@ func TestBuild_RespectsBatchDistance(t *testing.T) {
 	    "batchAttribute": "skill", "maxDistance": 5}]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 100), solo("c", 11), solo("d", 12)}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	ids := append([]string(nil), out[0].TicketIDs...)
 	sort.Strings(ids)
@@ -90,7 +103,7 @@ func TestBuild_NoMatchUnderMin(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 4, "maxPlayers": 4}]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 11)}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	assert.Empty(t, out)
 	assert.Len(t, remaining, 2)
 }
@@ -105,7 +118,7 @@ func TestBuild_QuantityExpansion(t *testing.T) {
 	  "teams": [{"name": "team", "minPlayers": 2, "maxPlayers": 2, "quantity": 2}]
 	}`)
 	tickets := []core.Ticket{solo("a", 1), solo("b", 2), solo("c", 3), solo("d", 4)}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Len(t, out[0].Teams["team_1"], 2)
 	assert.Len(t, out[0].Teams["team_2"], 2)
@@ -122,7 +135,7 @@ func TestBuild_QuantityDefaultsToOne(t *testing.T) {
 	  "teams": [{"name": "team", "minPlayers": 2, "maxPlayers": 2}]
 	}`)
 	tickets := []core.Ticket{solo("a", 1), solo("b", 2)}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Len(t, out[0].Teams["team"], 2, "single unsuffixed team")
 	_, suffixed := out[0].Teams["team_1"]
@@ -144,7 +157,7 @@ func TestBuild_BalancedStrategy(t *testing.T) {
 	  ]
 	}`)
 	tickets := []core.Ticket{solo("a", 10), solo("b", 100), solo("c", 11), solo("d", 99)}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	red := sumSkill(out[0].Teams["red"])
 	blue := sumSkill(out[0].Teams["blue"])
@@ -492,7 +505,7 @@ func TestBuild_BackfillSeatsRosterAndFillsRemainingSeats(t *testing.T) {
 		solo("a", 13),
 		solo("b", 14),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"a", "bf"}, out[0].TicketIDs)
 	assert.Equal(t, []string{"r1", "r2"}, playerIDs(out[0].Teams["red"]))
@@ -520,7 +533,7 @@ func TestBuild_BackfillEvaluatesRulesOverCombinedRoster(t *testing.T) {
 		solo("far", 100),
 		solo("near", 12),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"bf", "near"}, out[0].TicketIDs)
 	require.Len(t, remaining, 1)
@@ -547,7 +560,7 @@ func TestBuild_BackfillRosterViolatingRulesAdmitsNobody(t *testing.T) {
 		backfill("bf", seated("p1", "all", 10), seated("p2", "all", 100)),
 		solo("a", 11),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	assert.Empty(t, out)
 	assert.Len(t, remaining, 2)
 }
@@ -564,7 +577,7 @@ func TestBuild_BackfillAloneIsNotAMatch(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 4}]
 	}`)
 	tickets := []core.Ticket{backfill("bf", seated("p1", "all", 10), seated("p2", "all", 11))}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	assert.Empty(t, out)
 	assert.Len(t, remaining, 1)
 }
@@ -587,7 +600,7 @@ func TestBuild_TwoBackfillTicketsNeverShareAMatch(t *testing.T) {
 		backfill("bf2", seated("p3", "all", 12)),
 		solo("a", 13),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	assert.Empty(t, out)
 	assert.Len(t, remaining, 3)
 }
@@ -608,7 +621,7 @@ func TestBuild_BackfillSeatsExpandedTeamInstance(t *testing.T) {
 		backfill("bf", seated("p1", "team_1", 10)),
 		solo("a", 11), solo("b", 12), solo("c", 13),
 	}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"a", "b", "bf", "c"}, out[0].TicketIDs)
 	assert.Contains(t, playerIDs(out[0].Teams["team_1"]), "p1")
@@ -628,7 +641,7 @@ func TestBuild_BackfillWithUnknownTeamFormsNoMatch(t *testing.T) {
 	  "teams": [{"name": "all", "minPlayers": 2, "maxPlayers": 2}]
 	}`)
 	tickets := []core.Ticket{backfill("bf", seated("p1", "green", 10)), solo("a", 11)}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	assert.Empty(t, out)
 }
 
@@ -669,7 +682,7 @@ func TestBuild_BackfillPriorityOrdersTheSearch(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			rs := rsFor(c.priority)
-			out, _, _ := Build(rs, evals(t, rs), c.tickets)
+			out, _, _ := buildForTest(rs, evals(t, rs), c.tickets)
 			require.Len(t, out, 1)
 			if c.want {
 				assert.Contains(t, out[0].TicketIDs, "bf")
@@ -700,7 +713,7 @@ func TestBuild_BalancedStrategyIgnoresBackfillPriority(t *testing.T) {
 		backfill("bf", seated("p1", "all", 10)),
 		solo("c", 3),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.NotContains(t, out[0].TicketIDs, "bf")
 	require.Len(t, remaining, 1)
@@ -728,7 +741,7 @@ func TestBuild_BackfillRosterCountsAsSoloParties(t *testing.T) {
 		backfill("bf", seated("p1", "all", 10), seated("p2", "all", 11)),
 		solo("a", 12),
 	}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"a", "bf"}, out[0].TicketIDs)
 }
@@ -796,7 +809,7 @@ func TestBuild_BalancedLargeMatch(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		tickets = append(tickets, solo(fmt.Sprintf("t%02d", i), float64(i)))
 	}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Len(t, out[0].Teams["red"], 25)
 	assert.Len(t, out[0].Teams["blue"], 25)
@@ -808,9 +821,12 @@ func TestBuild_BalancedLargeMatch(t *testing.T) {
 // Purpose: Verify sharedRegion picks a region every player can reach, and picks it
 // deterministically when more than one region qualifies.
 // Method:  Two players who both report latencies for "eu" and "us" plus one region
-//          only one of them reports; call sharedRegion repeatedly.
+//
+//	only one of them reports; call sharedRegion repeatedly.
+//
 // Expect:  Always "eu" — the lexicographically smallest fully-covering region — never
-//          the partially-covering one, despite randomized map iteration order.
+//
+//	the partially-covering one, despite randomized map iteration order.
 func TestSharedRegion_DeterministicAcrossFullyCoveringRegions(t *testing.T) {
 	slots := []teamSlot{{Name: "all", Players: []core.Player{
 		{ID: "p1", Latencies: map[string]int{"us": 10, "eu": 20, "ap": 30}},
@@ -850,7 +866,7 @@ func TestBuild_SeveralBackfillTicketsFillSeparateMatches(t *testing.T) {
 		backfill("bf2", seated("p2", "all", 11)),
 		solo("a", 12), solo("b", 13),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 2)
 	assert.Equal(t, []string{"a", "bf1"}, out[0].TicketIDs)
 	assert.Equal(t, []string{"b", "bf2"}, out[1].TicketIDs)
@@ -879,7 +895,7 @@ func TestBuild_MetricsCoverEveryBackfillAttemptOfASearch(t *testing.T) {
 		backfill("bf", seated("p1", "all", 100)),
 		solo("a", 10), solo("b", 11),
 	}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"a", "b"}, out[0].TicketIDs)
 	require.Len(t, out[0].RuleEvaluationMetrics, 1)
@@ -906,7 +922,7 @@ func TestBuild_BackfillRosterCountsTowardsSharedRegion(t *testing.T) {
 		backfill("bf", core.Player{ID: "p1", Team: "all", Latencies: map[string]int{"us": 10}}),
 		{ID: "a", Players: []core.Player{{ID: "n1", Latencies: map[string]int{"eu": 30, "us": 20}}}},
 	}
-	out, _, _ := Build(rs, evals(t, rs), tickets)
+	out, _, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, "us", out[0].Region)
 }
@@ -936,7 +952,7 @@ func TestBuild_BackfillAdmitsPartiesWhole(t *testing.T) {
 		party,
 		solo("a", 22),
 	}
-	out, remaining, _ := Build(rs, evals(t, rs), tickets)
+	out, remaining, _ := buildForTest(rs, evals(t, rs), tickets)
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"a", "bf", "party"}, out[0].TicketIDs)
 	assert.Equal(t, []string{"d1", "d2"}, playerIDs(out[0].Teams["blue"]), "the party stayed together")
@@ -962,7 +978,7 @@ func TestBuild_PartySkipsTeamsWithoutRoom(t *testing.T) {
 		{ID: "d1", Attributes: core.Attributes{"skill": num(10)}},
 		{ID: "d2", Attributes: core.Attributes{"skill": num(11)}},
 	}}
-	out, remaining, _ := Build(rs, evals(t, rs), []core.Ticket{party, solo("a", 12)})
+	out, remaining, _ := buildForTest(rs, evals(t, rs), []core.Ticket{party, solo("a", 12)})
 	require.Len(t, out, 1)
 	assert.Equal(t, []string{"d1", "d2"}, playerIDs(out[0].Teams["duo"]))
 	assert.Equal(t, []string{"a"}, playerIDs(out[0].Teams["solo"]))
@@ -985,7 +1001,7 @@ func TestBuild_UnplaceableAnchorAbandonsTheSearch(t *testing.T) {
 	oversized := core.Ticket{ID: "trio", Players: []core.Player{
 		{ID: "p1"}, {ID: "p2"}, {ID: "p3"},
 	}}
-	out, remaining, _ := Build(rs, evals(t, rs), []core.Ticket{oversized, solo("a", 10), solo("b", 11)})
+	out, remaining, _ := buildForTest(rs, evals(t, rs), []core.Ticket{oversized, solo("a", 10), solo("b", 11)})
 	assert.Empty(t, out)
 	assert.Equal(t, []string{"trio", "a", "b"}, ids(remaining))
 }
@@ -995,7 +1011,7 @@ func TestBuild_UnplaceableAnchorAbandonsTheSearch(t *testing.T) {
 // Method:  Build against a zero-value rule set.
 // Expect:  No match, and the tickets are handed back untouched.
 func TestBuild_NoTeamsFormsNothing(t *testing.T) {
-	out, remaining, _ := Build(&ruleset.RuleSet{}, nil, []core.Ticket{solo("a", 10), solo("b", 11)})
+	out, remaining, _ := buildForTest(&ruleset.RuleSet{}, nil, []core.Ticket{solo("a", 10), solo("b", 11)})
 	assert.Empty(t, out)
 	assert.Equal(t, []string{"a", "b"}, ids(remaining))
 }

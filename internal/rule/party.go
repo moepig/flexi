@@ -117,8 +117,6 @@ func aggregatePartySets(party []core.Player, mode string) core.Player {
 }
 
 func reduceSets(party []core.Player, attr, mode string) []string {
-	var acc []string
-	first := true
 	counts := map[string]int{}
 	order := []string{}
 	for _, p := range party {
@@ -136,10 +134,6 @@ func reduceSets(party []core.Player, attr, mode string) []string {
 				order = append(order, s)
 			}
 			counts[s]++
-		}
-		if first {
-			acc = append(acc, a.SL...)
-			first = false
 		}
 	}
 	if mode == "intersection" {
