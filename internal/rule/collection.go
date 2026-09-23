@@ -47,8 +47,6 @@ func buildCollection(r *ruleset.Rule) (Evaluator, error) {
 					return nil, fmt.Errorf("collection %q: referenceValue[%d] must be a string: %w", r.Name, i, err)
 				}
 			}
-		} else if _, literal := ref.Node.(expr.StringLit); literal {
-			return nil, fmt.Errorf("collection %q: reference_intersection_count requires a list referenceValue", r.Name)
 		}
 	}
 	return &collection{

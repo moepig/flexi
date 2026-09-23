@@ -20,6 +20,26 @@ func TestExpandedTeamNameConflicts(t *testing.T) {
 	}
 }
 
+func TestExistingAcceptedRuleFormsRemainUsable(t *testing.T) {
+	for _, body := range []string{
+		`{"ruleLanguageVersion":"1.0","teams":[{"name":"all","minPlayers":1,"maxPlayers":1,"quantity":-1}]}`,
+		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"reference_intersection_count","referenceValue":"medic","minCount":1}]}`,
+		`{"ruleLanguageVersion":"1.0","playerAttributes":[{"name":"roles","type":"string_list"}],"teams":[{"name":"all","minPlayers":1,"maxPlayers":1}],"rules":[{"name":"roles","type":"collection","measurements":["players.attributes[roles]"],"operation":"contains","referenceValue":"medic","minCount":-1}]}`,
+	} {
+		m, err := New([]byte(body))
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		if err := m.Enqueue(Ticket{ID: "t", Players: []Player{{ID: "p", Attributes: Attributes{"roles": StringList("medic")}}}}); err != nil {
+			t.Fatal(err)
+		}
+		matches, err := m.Tick()
+		if err != nil || len(matches) != 1 {
+			t.Fatalf("matches=%d err=%v", len(matches), err)
+		}
+	}
+}
+
 func TestCountExpressionsUseParsedTeamScope(t *testing.T) {
 	cases := []struct {
 		name, teams, measurement string
