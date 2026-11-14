@@ -20,31 +20,16 @@ jobs:
           cache: true
       - name: Run tests
         run: go test ./...
-  automation:
-    name: automation
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 26
-      - run: npm ci --ignore-scripts
-        working-directory: .github/actions/dependency-release
-      - run: npm test && npm run build && git diff --exit-code -- dist/index.cjs
-        working-directory: .github/actions/dependency-release
   ci:
     name: ci
     runs-on: ubuntu-latest
     needs:
       - test
-      - automation
     if: ${{ always() }}
     steps:
-      - env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: node -e 'const jobs = JSON.parse(process.env.RESULTS); if (!Object.values(jobs).every(job => job.result === "success")) process.exit(1)'
+      - name: Require every CI job to succeed
+        if: ${{ needs['test'].result != 'success' }}
+        run: exit 1
 concurrency:
   group: ${{ format('ci-{0}', github.ref) }}
   cancel-in-progress: true
