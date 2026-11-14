@@ -1,0 +1,17 @@
+{
+  "name": "dependency-release-control",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild src/main.mjs --bundle --platform=node --target=node24 --format=cjs --outfile=dist/index.cjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "semver": "7.8.6",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
