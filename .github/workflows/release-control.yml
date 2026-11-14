@@ -41,7 +41,7 @@ jobs:
       sha: ${{ steps.discover.outputs.sha }}
     steps:
       - id: prepare
-        uses: moepig/flexi/.github/actions/dependency-release@0de782a2a86360049265211687891636fb9c80a5
+        uses: moepig/flexi/.github/actions/dependency-release@509f8413cae8548aed771934f13574d13fe06c6f
         with:
           token: ${{ github.token }}
           mode: prepare
@@ -57,12 +57,12 @@ jobs:
           skip-github-release: ${{ steps.prepare.outputs.skip-github-release == 'true' }}
       - id: discover
         if: ${{ steps.prepare.outputs.skip-github-release != 'true' }}
-        uses: moepig/flexi/.github/actions/dependency-release@0de782a2a86360049265211687891636fb9c80a5
+        uses: moepig/flexi/.github/actions/dependency-release@509f8413cae8548aed771934f13574d13fe06c6f
         with:
           token: ${{ github.token }}
           mode: discover
       - if: ${{ always() }}
-        uses: moepig/flexi/.github/actions/dependency-release@0de782a2a86360049265211687891636fb9c80a5
+        uses: moepig/flexi/.github/actions/dependency-release@509f8413cae8548aed771934f13574d13fe06c6f
         with:
           token: ${{ github.token }}
           mode: ready
@@ -93,7 +93,7 @@ jobs:
       pull-requests: write
       actions: read
     steps:
-      - uses: moepig/flexi/.github/actions/dependency-release@0de782a2a86360049265211687891636fb9c80a5
+      - uses: moepig/flexi/.github/actions/dependency-release@509f8413cae8548aed771934f13574d13fe06c6f
         with:
           token: ${{ github.token }}
           mode: finalize
