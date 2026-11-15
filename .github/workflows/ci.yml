@@ -19,7 +19,7 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Run tests
-        run: go test ./...
+        run: go test -race ./...
   ci:
     name: ci
     runs-on: ubuntu-latest
